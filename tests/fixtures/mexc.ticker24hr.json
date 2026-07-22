@@ -1,0 +1,9 @@
+[
+  {"symbol":"BTCUSDT","lastPrice":"42080.70","priceChangePercent":"0.0123","volume":"1850.5","quoteVolume":"77500000.0"},
+  {"symbol":"ETHUSDT","lastPrice":"2250.40","priceChangePercent":"0.0210","volume":"22000.0","quoteVolume":"49500000.0"},
+  {"symbol":"SOLUSDT","lastPrice":"98.30","priceChangePercent":"-0.0150","volume":"310000.0","quoteVolume":"30400000.0"},
+  {"symbol":"BTC3LUSDT","lastPrice":"1.230","priceChangePercent":"0.0500","volume":"5000000.0","quoteVolume":"60000000.0"},
+  {"symbol":"USDCUSDT","lastPrice":"1.0001","priceChangePercent":"0.0001","volume":"90000000.0","quoteVolume":"90000000.0"},
+  {"symbol":"DOGEUSDT","lastPrice":"0.08150","priceChangePercent":"0.0330","volume":"120000000.0","quoteVolume":"9780000.0"},
+  {"symbol":"ETHBTC","lastPrice":"0.05350","priceChangePercent":"0.0080","volume":"5000.0","quoteVolume":"268.0"}
+]

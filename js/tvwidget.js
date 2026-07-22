@@ -42,7 +42,7 @@ export async function mountAdvancedWidget(container, symbol, interval) {
   new TradingView.widget({
     container_id: "tv_adv_inner",
     autosize: true,
-    symbol: `BINANCE:${symbol.toUpperCase()}`,
+    symbol: `MEXC:${symbol.toUpperCase()}`,
     interval: TV_INTERVAL[interval] || "15",
     timezone: "Etc/UTC",
     theme: "dark",

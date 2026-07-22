@@ -80,18 +80,17 @@ console.log("evaluate gate");
     const c = 100 + Math.sin(i / 3) * 0.2; // tiny oscillation, no structure
     return mk(c, c + 0.05, c - 0.05, c);
   });
-  const dec = evaluate(flat, flat, { symbol: "T", interval: "15m", htfInterval: "1h" });
-  ok(["ACTIVE", "NO_TRADE"].includes(dec.status), "evaluate returns a valid status");
+  const dec = evaluate(flat, flat, { symbol: "T", interval: "5m", htfInterval: "15m" });
+  ok(["ACTIVE", "FORMING", "NONE"].includes(dec.status), "evaluate returns a valid status");
   eq(dec.strategies.length, 10, "evaluate reports all 10 strategies");
-  eq(dec.status, "NO_TRADE", "flat structureless data -> NO TRADE");
-  ok(typeof dec.noTrade.reason === "string" && dec.noTrade.reason.length > 0, "NO TRADE has a reason string");
+  eq(dec.status, "NONE", "flat structureless data -> NONE (no setup)");
 }
 
 // --- trackOutcome ----------------------------------------------------------
 console.log("trackOutcome states");
 {
   // LONG plan: entry 100, stop 99 (R=1), tp1 101.5, tp2 103.
-  const plan = { direction: "LONG", entryLow: 99.5, entryHigh: 100, entryPrice: 100, stop: 99, tp1: 101.5, tp2: 103, triggerTime: 0 };
+  const plan = { direction: "LONG", interval: "5m", entryLow: 99.5, entryHigh: 100, entryPrice: 100, stop: 99, tp1: 101.5, tp2: 103, triggerTime: 0 };
   const bar = (t, l, h, c = (l + h) / 2) => ({ time: t, open: c, high: h, low: l, close: c, volume: 1 });
 
   // TP2 path: fill, hit TP1, then TP2.
@@ -106,9 +105,13 @@ console.log("trackOutcome states");
   const runner = trackOutcome(plan, [bar(1, 99.7, 100.2), bar(2, 100.2, 101.6), bar(3, 101.2, 102.0)]);
   eq(runner.state, "tp1", "TP1 hit, runner still active");
 
-  // Awaiting: never fills (price stays above the entry zone).
+  // Awaiting: never fills (price stays above the entry zone), within expiry.
   const awaiting = trackOutcome(plan, [bar(1, 100.5, 101.0), bar(2, 100.6, 101.2)]);
-  eq(awaiting.state, "running", "never filled -> running/awaiting");
+  eq(awaiting.state, "waiting", "never filled (within expiry) -> waiting");
+
+  // Expired: never fills for more than expireBars (default 10 on 5m).
+  const many = Array.from({ length: 12 }, (_, i) => bar(i + 1, 100.5, 101.0));
+  eq(trackOutcome(plan, many).state, "expired", "no fill past expiry -> expired");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

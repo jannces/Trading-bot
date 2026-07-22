@@ -3,77 +3,75 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Crypto Trade-Plan Generator</title>
+  <title>MEXC Scalper Scanner</title>
   <link rel="stylesheet" href="css/style.css" />
-  <!-- TradingView Lightweight Charts (v4 standalone) from CDN. -->
   <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="logo">▲▼</span>
+      <span class="logo">◎</span>
       <div>
-        <h1>Trade-Plan Generator</h1>
-        <p class="subtitle">setup-driven signals · educational tool</p>
+        <h1>Scalper Scanner</h1>
+        <p class="subtitle">MEXC · top-50 · 1m/5m setups · 15m bias</p>
       </div>
     </div>
+    <div class="statusline" id="statusline">
+      <span id="stPairs">— pairs</span>
+      <span id="stCycle">— ms</span>
+      <span id="stWs" class="ws">connecting…</span>
+      <span id="stUpdate" class="muted">—</span>
+    </div>
     <div class="controls">
-      <select id="pairSelect" aria-label="Pair"></select>
-      <input id="pairInput" type="text" placeholder="Any pair e.g. ADAUSDT" aria-label="Custom pair" />
-      <select id="intervalSelect" aria-label="Timeframe"></select>
-      <button id="refreshBtn" class="btn primary">Refresh</button>
-      <button id="autoToggle" class="btn">Auto: OFF</button>
       <button id="notifyToggle" class="btn">🔔 Alerts: OFF</button>
     </div>
   </header>
 
-  <div id="statusBar" class="status-bar">Starting…</div>
-
-  <main>
-    <!-- Price strip -->
-    <section class="price-strip">
-      <span id="price" class="price">—</span>
-      <span id="change" class="change">—</span>
-      <span id="sourceTag" class="tag">Source: —</span>
-      <span id="htfTag" class="tag">HTF: —</span>
-      <span id="lastUpdate" class="tag muted">—</span>
+  <main class="layout">
+    <!-- Scanner feed -->
+    <section class="feed-col">
+      <div class="col-head">
+        <h2>Scanner feed</h2>
+        <span class="muted" id="feedCount">0 signals</span>
+      </div>
+      <div id="feed" class="feed"></div>
+      <div id="feedEmpty" class="feed-empty">No active or forming setups. Standing by…</div>
     </section>
 
-    <!-- HERO: the trade plan (ACTIVE) or NO TRADE -->
-    <section id="hero" class="hero notrade">
-      <div class="nt-badge">NO TRADE</div>
-      <div class="nt-title">Loading…</div>
-    </section>
-
-    <!-- Charts -->
-    <section class="panel chart-panel">
-      <div class="chart-tabs">
-        <button id="tabLw" class="chart-tab active">Signal chart</button>
-        <button id="tabAdv" class="chart-tab">TradingView Advanced</button>
-        <span id="chartNote" class="chart-note">Programmatic trade-plan levels (entry / SL / TP) are drawn on this Lightweight chart.</span>
-      </div>
-      <div id="lwChart" class="chart"></div>
-      <div id="advChart" class="chart" hidden></div>
-    </section>
-
-    <!-- Strategies + history -->
-    <section class="grid-2">
-      <div class="panel">
-        <h2 class="panel-title">Confirmations (10 strategies)</h2>
-        <div id="strategyGrid" class="strategy-grid"></div>
-      </div>
-      <div class="panel">
-        <h2 class="panel-title">Plan history <span class="muted">(this session)</span></h2>
-        <div id="history" class="history"></div>
-      </div>
+    <!-- Ledger -->
+    <section class="ledger-col">
+      <div class="col-head"><h2>Signal ledger</h2></div>
+      <div id="ledgerSummary" class="ledger-summary"></div>
+      <div id="ledger" class="ledger"></div>
     </section>
   </main>
 
+  <!-- Detail modal -->
+  <div id="detail" class="detail-overlay" hidden>
+    <div class="detail-card">
+      <div class="detail-head">
+        <div id="detailTitle" class="detail-title">—</div>
+        <button id="detailClose" class="btn">✕</button>
+      </div>
+      <div class="chart-tabs">
+        <button id="tabLw" class="chart-tab active">Signal chart</button>
+        <button id="tabAdv" class="chart-tab">TradingView (MEXC)</button>
+        <span id="chartNote" class="chart-note">Frozen entry / SL / TP lines are drawn on this Lightweight chart.</span>
+      </div>
+      <div id="detailChart" class="chart"></div>
+      <div id="detailAdv" class="chart" hidden></div>
+      <div class="detail-confluence">
+        <div class="hc-title">Confluence checklist</div>
+        <ul id="detailChecklist"></ul>
+      </div>
+    </div>
+  </div>
+
   <footer class="footer">
-    Educational tool — not financial advice. Setups, entries and targets are illustrative and may be wrong.
-    Data from Binance / CoinGecko public APIs. Do your own research and manage your own risk.
+    Educational tool — not financial advice. Signals, entries and targets are illustrative and may be wrong.
+    Data from MEXC public APIs. Do your own research and manage your own risk.
   </footer>
 
-  <script type="module" src="js/main.js"></script>
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>

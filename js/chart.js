@@ -80,8 +80,9 @@ export function createChartManager(container) {
     line(plan.tp1, "#26a37b", "TP1");
     line(plan.tp2, "#7d8ea3", "TP2");
 
-    // Marker on the trigger candle.
-    const trig = candles[plan.triggerIndex];
+    // Marker on the trigger candle — located by TIME (indices go stale as the
+    // frozen signal's candle window rolls forward).
+    const trig = candles.find((c) => c.time === plan.triggerTime) || candles[plan.triggerIndex];
     if (trig) {
       const long = plan.direction === "LONG";
       candleSeries.setMarkers([

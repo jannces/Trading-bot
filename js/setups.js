@@ -261,11 +261,15 @@ function detectTrendPullback(candles, ctx) {
 // ---------------------------------------------------------------------------
 function mkSetup(id, name, direction, triggerIndex, triggerTime, entryLow, entryHigh, stop, hints) {
   const entryPrice = direction === "LONG" ? entryHigh : entryLow;
+  const clean = hints.filter(Boolean);
+  // Setup self-strength (0-100): more structural confirmations = stronger.
+  const strength = Math.max(40, Math.min(90, 50 + clean.length * 8));
   return {
     id, name, direction, triggerIndex, triggerTime,
     entryLow, entryHigh, entryPrice, stop,
-    rationale: hints.filter(Boolean)[0] || name,
-    hints: hints.filter(Boolean),
+    strength,
+    rationale: clean[0] || name,
+    hints: clean,
   };
 }
 

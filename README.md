@@ -1,221 +1,236 @@
-# Crypto Trade-Plan Generator
+# MEXC Scalper Signal Scanner
 
-A **local, static** web app (plain HTML/CSS + vanilla JS ES modules, no build
-step) that turns live crypto data into **one actionable trade plan — or an
-explicit NO TRADE**. It is deliberately *not* a "verdict meter": instead of
-averaging indicators into a fuzzy lean, it waits for a **named setup** to trigger
-on a concrete event, confirms it against 10 strategies and the higher-timeframe
-bias, and only then emits an entry / stop / take-profit plan. Most of the time it
-says **NO TRADE**, and that is the point.
+A local **multi-pair scalper scanner** for MEXC. A small Node backend holds the
+exchange connection, scans the **top-50 USDT pairs** on **1m and 5m** (with
+**15m** as the higher-timeframe bias), runs the same setup/confluence "brain"
+from the previous single-pair version, and pushes results to a dark
+signal-terminal frontend over SSE. When a setup passes the strict gate it
+becomes a **locked signal** (levels frozen at creation) whose outcome is tracked
+live and recorded to a persistent ledger.
 
-> **Educational tool — not financial advice.** Setups, entries and targets are
+> **Educational tool — not financial advice.** Signals, entries and targets are
 > illustrative and can be wrong. Do your own research and manage your own risk.
 
 ---
 
-## How to run
+## Run it
 
-### One-click launcher
-- **Windows:** double-click **`run.bat`**
-- **macOS / Linux:** `chmod +x run.sh` once, then `./run.sh`
-
-### Manual
-It uses ES modules, so serve over HTTP (opening `index.html` as a `file://`
-won't load modules):
+Requires **Node.js 18+** (uses built-in `fetch` and ES modules).
 
 ```bash
-python -m http.server 8000       # or: python3 -m http.server 8000 / npx serve
+npm install
+node server.js
+# then open http://localhost:8000
 ```
 
-Open <http://localhost:8000>. The candlestick chart uses **TradingView
-Lightweight Charts** loaded from a CDN, and a second tab embeds the full
-**TradingView Advanced Chart** widget — so you'll want internet access for the
-charts (signals themselves work from the fetched candle data).
+Offline demo (synthetic data, no network — useful to see it work without MEXC):
 
-### Run the tests
 ```bash
-npm test           # runs both test files
-# or individually:
-node tests/indicators.test.js   # EMA/RSI/MACD/ATR/Bollinger math (22 checks)
-node tests/setups.test.js       # HTF bias, resampling, setup triggers, gate, outcomes (27 checks)
+MOCK=1 node server.js      # or: npm run mock
 ```
 
-### Backtest (prove it works)
-```bash
-node backtest.js BTCUSDT 5m 1000
-node backtest.js BTCUSDT 15m 1000
-node backtest.js --demo 1500     # offline synthetic data, no network
-```
-See **"Backtesting & tuning"** below for what it reports.
+One-click menus are also provided: **`run.bat`** (Windows) / **`./run.sh`**
+(macOS/Linux).
 
 ---
 
-## What the app shows
+## Live prices — WebSocket vs REST polling (read this)
 
-1. **Hero card — the trade plan.** Either:
-   - **ACTIVE SETUP** (only when the gate passes): direction (LONG/SHORT), pair,
-     timeframe, **entry zone**, **stop-loss** (beyond the invalidation point with
-     an ATR buffer), **TP1 (1.5R)** and **TP2 (3R)** with the R:R shown, a
-     **confidence tier (A+ / A / B)**, a **checklist of exactly which confluences
-     fired** in plain language, the **trigger candle timestamp**, and a live
-     **outcome** (awaiting entry / running / TP1 / TP2 / stopped / **invalidated**
-     if price later closes beyond the stop).
-   - **NO TRADE** (the default): a clear "no high-probability setup right now"
-     with *what's missing* (e.g. "Breakout & Retest LONG triggered but only
-     5/10 aligned; counter to 1h trend — standing aside").
-2. **Charts** (two tabs): the **Signal chart** (Lightweight Charts) with the
-   plan's entry/SL/TP price lines and a marker on the trigger candle; and the
-   **TradingView Advanced** widget for your own analysis. Programmatic levels
-   only appear on the Signal chart — the embedded widget can't be drawn on (the
-   UI says so).
-3. **Confirmations** — the 10 strategies with signal / strength / reason.
-4. **Plan history** (session-only) — every emitted plan with its levels, tier,
-   and live outcome.
-5. **Alerts** — optional browser notification + sound when a new **A / A+** plan
-   appears while auto-refresh is on.
+Per the brief, the websocket format was to be **verified before building on it**.
+**The build environment could not reach `api.mexc.com` or `wbs.mexc.com`** (egress
+policy returns HTTP 403), so the websocket **could not be tested against the live
+exchange**. Following the brief's own fallback guidance, the shipped default is:
+
+- **`CONFIG.liveMode = "poll"`** — the server polls MEXC's all-symbol price
+  endpoint (`/api/v3/ticker/price`, one request) every `timing.pricePollMs`
+  (1.5s) for live price ticks, and refetches klines each scan cycle with a
+  concurrency cap + politeness stagger. This path is what runs today.
+- **`js/mexcws.js`** — a MEXC websocket client (`wss://wbs.mexc.com/ws`,
+  `{"method":"SUBSCRIPTION","params":["spot@public.deals.v3.api@BTCUSDT"]}`) is
+  included **but is NOT wired into the running server**, because it is unverified
+  and MEXC has migrated some spot streams to **protobuf**. Before enabling it,
+  test locally: if you receive binary frames, decode them with MEXC's protobuf
+  schema (<https://github.com/mexcdevelop/websocket-proto>) or keep REST polling.
+  The module documents exactly what to check.
+
+So: **prices are live via fast REST polling by default; the websocket is
+opt-in and must be verified first.**
 
 ---
 
-## The setups (the signal, not an average)
+## How it works
 
-`confluence.js` is built around **named setups** (`setups.js`). Each must be
-triggered by a concrete **event** and defines its **own** entry zone,
-invalidation (stop) and direction from structure — the 10 strategies then act as
-confirmations/vetoes, not co-equal votes.
+### Backend (`server.js`)
+- Ranks the top-50 USDT pairs by 24h quote volume on startup (refreshes hourly),
+  excluding leveraged tokens (`…3L/3S`) and stablecoin-vs-stablecoin pairs.
+- Fetches 1m / 5m / 15m klines per pair (concurrency-capped, backoff-aware).
+- Runs the scanner loop server-side and serves the static frontend.
+- Pushes `scan` / `prices` / `signal` / `ledger` events to the browser over
+  **SSE** (`/events`). REST helpers: `/api/klines`, `/api/snapshot`,
+  `/api/ledger`, `/api/status`.
+- Persists the signal ledger to **`ledger.json`** so history survives restarts.
 
-1. **Sweep & Reverse (SMC)** — a liquidity sweep of a prior swing high/low
-   followed by displacement the other way → entry at the fair-value gap / order
-   block left by the displacement; stop beyond the swept wick.
-2. **Divergence Reversal** — regular RSI divergence at a swing point, confirmed
-   by a Stochastic/Bollinger extreme and a reaction candle → entry near the
-   divergence swing; stop beyond it.
-3. **Breakout & Retest** — a confirmed *close-based* S/R breakout → entry on the
-   retest of the broken level; stop back beyond the level.
-4. **Trend Pullback** — EMA9/21 trend intact + a pullback to EMA21/VWAP with MACD
-   momentum resuming → entry in the pullback band; stop beyond the last swing.
+### Scanner (`js/scanner.js`)
+- Re-evaluates each pair on 1m and 5m every cycle. **Pairs with no setup are not
+  shown.** The feed contains only:
+  - **active locked signals**, and
+  - **forming setups** (event detected, waiting on confirmations — shows what's
+    missing), ranked by score.
+- **1m signals also require 5m directional agreement.**
+- A compact status line shows pairs scanned, scan cycle time, feed source, and
+  last update.
 
----
+### The setups + gate (the "brain", unchanged)
+Named, event-triggered setups (`js/setups.js`) — **Sweep & Reverse**,
+**Divergence Reversal**, **Breakout & Retest**, **Trend Pullback** — each define
+their own entry/stop/direction from structure. A signal **locks** only when
+(`js/confluence.js`, all thresholds in `config.js`):
 
-## The gate (the "high quality" filter)
+1. a setup triggered on the timeframe (an event, within `triggerRecencyBars`),
+2. **≥ `gate.minAgree` (6) of 10** strategies agree, and none of
+   `gate.vetoStrategies` (RSI-divergence, SMC, S/R) contradicts,
+3. **HTF (15m) bias is not counter**,
+4. **R:R to TP1 ≥ `gate.minRR` (1.2)** with room to structure, and
+5. **scalper guardrail:** stop distance ≤ `scalper.stopCapPct[tf]`
+   (default **0.6% on 1m, 1.2% on 5m**).
 
-A plan is emitted **only when ALL** of these pass (all thresholds in
-`config.js → gate`):
+**Tier:** A+ (≥8 aligned & HTF strong-aligned), A (≥7), B (≥6). Each signal also
+gets a **0–100 score** and named **contributors** (e.g. "Liquidity Sweep · 77",
+"RSI Divergence · 81").
 
-1. **A named setup triggered** on the active timeframe within the last
-   `triggerRecencyBars` candles (an event, not a state).
-2. **≥ `minAgree` (default 6) of 10 strategies** agree with the setup direction,
-   **and none of the top-weighted three** (`vetoStrategies`: RSI-divergence, SMC,
-   S/R) actively contradicts it.
-3. **Higher-timeframe bias is not counter.** The app fetches one HTF alongside
-   the active TF (`htfMap`: 5m→1h, 15m→1h, 1h→4h, 4h→1d, 1d→1w) and computes bias
-   from EMA structure + last swing. Counter-HTF setups are rejected (and the
-   NO-TRADE reason says so).
-4. **≥ `minRR` (default 1.2) room to TP1** before the nearest opposing structure;
-   otherwise rejected.
+### Locked signals (frozen at creation)
+When the gate passes, a signal record is frozen: direction, pair, TF, score,
+entry zone, SL, TP1/TP2, tier, contributors. **Levels and side never change
+after creation** — only the status advances:
+`LOCKED → RUNNING → TP1 HIT → TP2 HIT / STOPPED / EXPIRED`. If price runs away
+without filling the entry within `scalper.expireBars[tf]` (default 10 on 1m),
+it's marked **EXPIRED**. Outcome simulation: half off at TP1, stop to breakeven,
+runner to TP2 (conservative intrabar).
 
-**Tier:** A+ = `tiers.aPlusAgree` (8) aligned **and** HTF strongly agrees;
-A = `tiers.aAgree` (7); B = `tiers.bAgree` (6).
-
----
-
-## How to change weights / thresholds
-
-Everything tunable lives in **`js/config.js`** (plain data):
-
-| Setting | Where | What it does |
-|---|---|---|
-| Gate | `CONFIG.gate` | `minAgree`, `vetoStrategies`, `triggerRecencyBars`, `minRR`, `tp1R`/`tp2R`, tier thresholds, `requireHtfAlignment`. |
-| Setups on/off | `CONFIG.setups` | Enable/disable each setup and tweak its ATR buffers. Set `enabled:false` to switch one off. |
-| HTF mapping | `CONFIG.htfMap` | Which higher timeframe backs each active timeframe. |
-| Strategy weights | `CONFIG.weights` | Relative weighting; the three biggest are the veto set. |
-| Indicator periods | `CONFIG.indicators` | EMA/RSI/MACD/BB/Stochastic periods, pivot sensitivity. |
-| Risk / backtest | `CONFIG.risk`, `CONFIG.backtest` | ATR period, fill window, warm-up. |
-| Alerts | `CONFIG.notifications` | Default on/off and `minTierForAlert`. |
-
-All indicator math is in **`js/indicators.js`** as auditable pure functions.
+### UI (`index.html`, `js/app.js`)
+- **Scanner feed** — a card per active/forming signal: pair, TF, direction,
+  score ring, entry zone, SL, TP1/TP2, contributor chips, age in bars, status
+  badge, and a **live price tick**.
+- **Detail view** (click a card) — TradingView **Lightweight Charts** of that
+  pair/TF with the **frozen** entry/SL/TP lines and a trigger-candle marker, plus
+  the full confluence checklist; a second tab embeds the TradingView **Advanced
+  widget** (`MEXC:` symbol) for manual analysis (programmatic levels only appear
+  on the Lightweight chart).
+- **Signal ledger** — every accepted signal as one immutable record with its
+  final outcome and realized R; a summary header shows total / win rate / avg R /
+  expectancy, overall and per setup type.
+- **Browser notification + sound** on new A/A+ signals (toggle in the top bar).
 
 ---
 
 ## Backtesting & tuning
 
 ```bash
-node backtest.js SYMBOL TF CANDLES
+node backtest.js SYMBOL TF CANDLES     # e.g. node backtest.js BTCUSDT 5m 1000
+node backtest.js --scan TF CANDLES     # across the current top-50 list
+node backtest.js --demo 5m 1000        # offline synthetic data
+node backtest.js --demo --scan 5m 1000 # offline scan across mock symbols
 ```
 
-Replays candles **bar-by-bar through the exact same `evaluate()` gate** the
-dashboard uses, with **no look-ahead** (only `candles[0..i]` are visible at bar
-`i`). The higher-timeframe bias is derived by **resampling those same candles**,
-so live and backtest share one code path. Each emitted plan is simulated:
-
-- limit **entry fills** when price trades into the zone (else it expires),
-- **half off at TP1**, stop moved to **breakeven**, runner to **TP2**,
-- **conservative intrabar order** (stop/breakeven assumed to fill before a
-  target), so results are a floor, not an optimistic ceiling.
-
-It reports, **per setup type and per tier**: number of signals, win rate,
-average R, expectancy (R/trade), and max drawdown in R (equity curve). If any
-setup shows **negative expectancy** on your sample, it tells you to set
+Replays candles **bar-by-bar through the same `evaluate()` gate** the scanner
+uses (no look-ahead; HTF via resampling) with the **scalper guardrails applied**,
+simulates each plan (half off at TP1 → breakeven → runner to TP2, conservative
+intrabar), and reports **per setup type, per tier (and per pair in `--scan`)**:
+signals, win rate, avg R, expectancy, and max drawdown in R. It flags any setup
+type with **negative expectancy** so you can disable it via
 `CONFIG.setups.<id>.enabled = false`.
 
-**On real data:** run it on `BTCUSDT 5m` and `15m` (and your own pairs) before
-trusting anything, and disable any setup that prints negative expectancy over a
-reasonable sample.
+### On real data — please run this yourself
+The build sandbox can't reach MEXC, so I could **not** run the backtest on live
+BTCUSDT 1m/5m. It was validated end-to-end on **synthetic** data instead
+(`--demo` / `--demo --scan`), which proves the machinery but is **not** a basis
+for enabling/disabling setups — random synthetic candles have no edge, so every
+setup nets slightly negative there (that's expected, not evidence). **All four
+setups therefore ship enabled.** Run these on your machine and act on the output:
 
-> **Note on this build's own verification:** the sandbox used to build this
-> could not reach Binance/CoinGecko (egress policy returns HTTP 403), so the
-> real-data backtests must be run on your machine. The engine, gate,
-> simulation and report were validated end-to-end on synthetic data
-> (`node backtest.js --demo`) and by the test suite; the parser targets
-> Binance's documented kline layout and runs from your browser/Node where the
-> endpoint is reachable, with automatic fallback to Binance.US then CoinGecko.
+```bash
+node backtest.js BTCUSDT 1m 1000
+node backtest.js BTCUSDT 5m 1000
+node backtest.js --scan 1m 1000
+node backtest.js --scan 5m 1000
+```
+
+If a setup shows negative expectancy over a reasonable real sample, set
+`CONFIG.setups.<id>.enabled = false`.
+
+---
+
+## Configuration (`js/config.js`)
+
+| Area | Key | What |
+|---|---|---|
+| Exchange | `exchange` | MEXC REST/WS base + interval map (`1h`→`60m`). |
+| Scanner | `scanner` | top-N, refresh, scan timeframes, HTF, exclusions. |
+| Timing | `timing` | price poll, scan interval, concurrency, backoff. |
+| Live mode | `liveMode` | `"poll"` (default) or `"ws"` (unverified). |
+| Gate | `gate` | minAgree, veto set, recency, minRR, tiers, forming slack. |
+| Scalper | `scalper` | `stopCapPct` and `expireBars` per timeframe. |
+| Setups | `setups` | enable/disable each setup + ATR buffers. |
+| Server | `server` | port, ledger path. |
+
+Indicator math lives in `js/indicators.js` as auditable pure functions.
+
+---
+
+## Tests
+
+```bash
+npm test        # runs all three suites
+```
+
+- `tests/indicators.test.js` — EMA/RSI/MACD/ATR/Bollinger math (hand-computed).
+- `tests/setups.test.js` — HTF bias + resampling, setup triggering, the gate
+  states, and outcome tracking (waiting/running/tp1/tp2/stopped/expired).
+- `tests/mexc.test.js` — MEXC kline / 24hr-ticker parsing and top-pair ranking
+  against a fixture in `tests/fixtures/` (constructed from MEXC's documented
+  shapes, since the build env couldn't capture a live response).
+
+**Verification done for this build:** all tests pass; the backend was driven
+end-to-end on mock data (top-list ranking → scan → gate → locked signals →
+outcome tracking → ledger + summary), and the HTTP layer was smoke-tested
+(static files, `/api/snapshot`, `/api/klines`, SSE). Live MEXC + the real-data
+backtests must be run on your machine.
 
 ---
 
 ## Project structure
 
 ```
-index.html
-css/style.css
-js/main.js            App state, fetch loop (active TF + HTF), rendering, alerts
-js/api.js             Binance/CoinGecko fetching + fallback + error handling
-js/chart.js           TradingView Lightweight Charts wrapper (candles/volume/levels)
-js/tvwidget.js        TradingView Advanced Chart embed (second tab)
-js/confluence.js      The gate: setup + strategies + HTF -> plan | NO TRADE; outcomes
-js/setups.js          Named event-triggered setups (entry/stop/direction from structure)
-js/htf.js             Higher-timeframe bias + resampling
-js/config.js          All gate thresholds, setup switches, weights, periods (edit here)
-js/indicators.js      Pure indicator math (audit/tweak here)
-js/strategies/        The 10 confirmation strategies + index.js registry
-backtest.js           Bar-by-bar replay of the gate + trade simulation + stats
-run.bat / run.sh      One-click launcher menus
-tests/indicators.test.js   Indicator math tests
-tests/setups.test.js       HTF bias, resampling, setup-trigger, gate, outcome tests
-README.md
+server.js               Node backend: MEXC data + scanner loop + static + SSE + ledger
+js/config.js            All thresholds, scanner list, scalper guardrails (edit here)
+js/mexc.js              MEXC REST client + pure parsers/ranking (fixture-tested)
+js/mexcws.js            Optional MEXC websocket client (UNVERIFIED — opt-in)
+js/mockprovider.js      Synthetic data provider for MOCK/offline mode
+js/scanner.js           Multi-pair scan loop, signal lifecycle, ledger
+js/confluence.js        The gate: setup + strategies + HTF -> locked signal; outcomes
+js/setups.js            Named event-triggered setups
+js/htf.js               Higher-timeframe bias + resampling
+js/indicators.js        Pure indicator math
+js/strategies/          The 10 confirmation strategies
+js/app.js               Browser client (SSE consumer, cards, detail view, alerts)
+js/chart.js             TradingView Lightweight Charts wrapper
+js/tvwidget.js          TradingView Advanced widget (MEXC: symbol)
+index.html, css/        Frontend
+backtest.js             Bar-by-bar replay + scalper sim + --scan
+tests/                  indicators / setups / mexc + fixtures
+run.bat / run.sh        Launcher menus
 ```
-
----
-
-## The 10 confirmation strategies
-
-Each exports `analyze(candles) → { signal, strength, reason }`:
-EMA Crossover (9/21), RSI(14)+divergence, MACD (12/26/9), Bollinger (20,2),
-Ichimoku Cloud, Stochastic (14,3,3), VWAP (session), S/R Breakout, Smart Money
-Concepts (ICT), Volume (OBV + spikes). In this build they are **confirmations**
-for the gate, not the signal themselves.
 
 ---
 
 ## Known limitations
 
-- **Not financial advice.** Mechanical setups on lagging data; a study aid.
-- **Charts need a CDN** (TradingView Lightweight Charts + the Advanced widget). If
-  offline, signals still compute but the chart shows a fallback message.
-- **CoinGecko fallback has no volume**, so OBV/volume confirmations degrade there
-  (the status bar tells you when this feed is active).
-- **Backtest HTF is resampled** from the base candles (not a separate fetch) to
-  stay look-ahead-free; live uses a real HTF fetch — a small, deliberate
-  difference.
-- **Session-only history** — clears on reload. Alerts require granting the
-  browser notification permission.
-- **Thresholds are heuristic** — tune them in `config.js` using the backtest,
-  and disable any setup with negative expectancy on your market/timeframe.
+- **Not financial advice.** Mechanical setups on lagging data.
+- **WebSocket is unverified** from the build env; REST polling is the default
+  live path. Verify `js/mexcws.js` before switching `liveMode` to `"ws"`.
+- **Charts need a CDN** (TradingView Lightweight Charts + the Advanced widget).
+- **Backtest HTF is resampled** from base candles (no look-ahead); the live
+  scanner uses real 15m klines — a small, deliberate difference.
+- **Ledger** is a local JSON file (`ledger.json`); deleting it resets history.
+- **Thresholds are heuristic** — tune them in `config.js` using the backtest on
+  real MEXC data, and disable any setup with negative expectancy.

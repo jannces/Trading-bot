@@ -1,13 +1,17 @@
 {
-  "name": "crypto-confluence-dashboard",
-  "version": "1.0.0",
-  "description": "Local static crypto buy/sell confluence signal dashboard (no build step).",
+  "name": "mexc-scalper-scanner",
+  "version": "2.0.0",
+  "description": "Local MEXC multi-pair scalper signal scanner (Node backend + static frontend).",
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node tests/indicators.test.js && node tests/setups.test.js",
-    "serve": "python3 -m http.server 8000",
+    "start": "node server.js",
+    "mock": "MOCK=1 node server.js",
+    "test": "node tests/indicators.test.js && node tests/setups.test.js && node tests/mexc.test.js",
     "backtest": "node backtest.js",
     "backtest:demo": "node backtest.js --demo"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
   }
 }
