@@ -6,6 +6,8 @@
   "private": true,
   "scripts": {
     "test": "node tests/indicators.test.js",
-    "serve": "python3 -m http.server 8000"
+    "serve": "python3 -m http.server 8000",
+    "backtest": "node backtest.js",
+    "backtest:demo": "node backtest.js --demo"
   }
 }

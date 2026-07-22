@@ -34,6 +34,36 @@ node tests/indicators.test.js
 This checks EMA, RSI, MACD, ATR, Bollinger (and SMA/OBV) math against
 hand-computed known values from fixed candle arrays. No test framework needed.
 
+### Backtest the confluence engine
+
+Turn weight/threshold tuning from guesswork into something measurable. This
+replays recent candles through the **exact same** strategies + confluence code
+the dashboard uses, and reports how the **High-Quality** signals would have
+performed at **1.5R / 3R**:
+
+```bash
+node backtest.js                    # BTCUSDT 15m, 500 candles (defaults)
+node backtest.js ETHUSDT 5m 1000    # any pair / timeframe / 300–1000 candles
+node backtest.js --demo             # offline: synthetic candles, no network
+```
+
+What it does (with **no look-ahead**): for every bar it scores the confluence
+on candles up to that bar only, builds the same illustrative plan the UI shows
+(entry = that bar's close, ATR/swing stop, TP1 = 1.5R, TP2 = 3R), then walks
+forward to see what got hit. Intrabar ties are resolved **conservatively** (if a
+candle spans both stop and target, the stop is assumed first), so the win-rates
+are a floor, not an optimistic ceiling.
+
+Crucially it **sweeps the High-Quality gate** across several
+`minAgreeing × minComposite` settings and prints a table of signal count,
+frequency, TP1%/TP2% win-rate, and expectancy (R/trade) for each — so you can
+see directly whether **7-of-10 agreement** is too strict (few signals) or too
+loose (poor win-rate) *before* changing `js/config.js`. The row matching your
+live config is marked, with a detailed breakdown underneath.
+
+> It's a measurement tool on a small, recent, single-sample dataset — not a
+> promise of future results, and still not financial advice.
+
 ---
 
 ## Data sources & fallback
@@ -127,6 +157,7 @@ js/confluence.js      Weighted composite scoring + trade-plan builder
 js/config.js          All weights, thresholds, periods, defaults (edit here)
 js/indicators.js      Pure indicator math (audit/tweak here)
 js/strategies/        One file per strategy + index.js registry
+backtest.js           Replay candles through the engine; measure 1.5R/3R + sweep thresholds
 tests/indicators.test.js   Node test of the indicator math
 README.md
 ```
