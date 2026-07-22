@@ -1,0 +1,13 @@
+{
+  "name": "crypto-confluence-dashboard",
+  "version": "1.0.0",
+  "description": "Local static crypto buy/sell confluence signal dashboard (no build step).",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node tests/indicators.test.js",
+    "serve": "python3 -m http.server 8000",
+    "backtest": "node backtest.js",
+    "backtest:demo": "node backtest.js --demo"
+  }
+}

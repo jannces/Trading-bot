@@ -1,0 +1,207 @@
+/* ==========================================================================
+   Crypto Confluence Dashboard — dark trading-terminal theme, responsive.
+   Plain CSS, no framework. Mobile-first-friendly (grids collapse on phones).
+   ========================================================================== */
+:root {
+  --bg: #0a0e14;
+  --panel: #0f1620;
+  --panel-2: #131c28;
+  --border: #1e2a3a;
+  --text: #d7e0ea;
+  --muted: #7d8ea3;
+  --up: #26a37b;
+  --down: #e5484d;
+  --neutral: #c2a33a;
+  --accent: #3d7dff;
+  --gold: #e3b341;
+  --radius: 10px;
+  font-size: 15px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.4;
+}
+
+h1, h2 { margin: 0; }
+.muted { color: var(--muted); font-weight: 400; }
+
+/* --- Top bar / controls --------------------------------------------------- */
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand h1 { font-size: 1.15rem; letter-spacing: 0.3px; }
+.subtitle { margin: 0; font-size: 0.72rem; color: var(--muted); }
+.logo {
+  font-size: 1.1rem; color: var(--accent);
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 4px 8px; letter-spacing: -2px;
+}
+
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+select, input[type="text"], .btn {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  outline: none;
+}
+input[type="text"] { width: 150px; }
+input::placeholder { color: var(--muted); }
+select:focus, input:focus { border-color: var(--accent); }
+.btn { cursor: pointer; user-select: none; transition: background 0.15s, border-color 0.15s; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.1); }
+.btn.on { border-color: var(--up); color: var(--up); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+/* --- Status bar ----------------------------------------------------------- */
+.status-bar {
+  padding: 7px 16px;
+  font-size: 0.78rem;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+.status-bar.ok { color: var(--up); }
+.status-bar.error { color: var(--down); }
+.status-bar.loading { color: var(--gold); }
+
+/* --- Layout --------------------------------------------------------------- */
+main { padding: 16px; max-width: 1400px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.panel-title { font-size: 0.9rem; color: var(--muted); margin-bottom: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+/* --- Top panel: price + verdict ------------------------------------------ */
+.top-panel { display: grid; grid-template-columns: minmax(200px, 1fr) 2fr; gap: 20px; align-items: center; }
+.price-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.price { font-size: 2.2rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.change { font-size: 1.1rem; font-weight: 600; }
+.change.pos { color: var(--up); }
+.change.neg { color: var(--down); }
+.tags { margin-top: 8px; display: flex; gap: 10px; flex-wrap: wrap; }
+.tag { font-size: 0.72rem; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); padding: 3px 8px; border-radius: 6px; }
+.tag.muted { color: var(--muted); }
+
+.verdict-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.verdict { font-size: 1.6rem; font-weight: 800; letter-spacing: 0.5px; }
+.hq-badge {
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.5px;
+  color: #0a0e14; background: var(--gold);
+  padding: 4px 10px; border-radius: 20px;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(227,179,65,0.5);} 50% { box-shadow: 0 0 0 6px rgba(227,179,65,0);} }
+
+/* Verdict color coding (shared by verdict text, gauge fill, history) */
+.strong-buy { color: var(--up); }
+.buy { color: var(--up); }
+.neutral { color: var(--neutral); }
+.sell { color: var(--down); }
+.strong-sell { color: var(--down); }
+
+/* --- Composite gauge ------------------------------------------------------ */
+.gauge { margin: 6px 0; }
+.gauge-track {
+  position: relative;
+  height: 16px;
+  background: linear-gradient(90deg, rgba(229,72,77,0.25), rgba(125,142,163,0.15) 50%, rgba(38,163,123,0.25));
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  overflow: hidden;
+}
+.gauge-mid { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: var(--border); transform: translateX(-50%); z-index: 2; }
+.gauge-fill { position: absolute; top: 0; bottom: 0; left: 0; width: 50%; opacity: 0.85; transition: width 0.4s ease; }
+.gauge-fill.strong-buy, .gauge-fill.buy { background: var(--up); }
+.gauge-fill.sell, .gauge-fill.strong-sell { background: var(--down); }
+.gauge-fill.neutral { background: var(--neutral); }
+.gauge-labels { display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--muted); margin-top: 5px; }
+.gauge-value { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+.agree { font-size: 0.78rem; color: var(--muted); margin-top: 6px; }
+
+/* --- Trade plan card ------------------------------------------------------ */
+.plan { margin-top: 12px; }
+.plan-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--panel-2); }
+.plan-card.buy { border-left: 3px solid var(--up); }
+.plan-card.sell { border-left: 3px solid var(--down); }
+.plan-head { font-size: 0.82rem; font-weight: 600; margin-bottom: 10px; }
+.illustrative { color: var(--muted); font-weight: 400; font-size: 0.72rem; }
+.plan-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.plan-grid > div { display: flex; flex-direction: column; gap: 2px; }
+.plan-grid span { font-size: 0.68rem; color: var(--muted); }
+.plan-grid b { font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+
+/* --- Chart ---------------------------------------------------------------- */
+.chart-panel { padding-bottom: 8px; }
+.chart { width: 100%; height: 380px; display: block; border-radius: 8px; }
+
+/* --- Strategy cards ------------------------------------------------------- */
+.strategy-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.strategy-card { background: var(--panel-2); border: 1px solid var(--border); border-left-width: 3px; border-radius: 8px; padding: 10px 12px; }
+.strategy-card.buy { border-left-color: var(--up); }
+.strategy-card.sell { border-left-color: var(--down); }
+.strategy-card.neutral { border-left-color: var(--neutral); }
+.sc-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.sc-name { font-size: 0.82rem; font-weight: 600; }
+.sc-signal { font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 12px; letter-spacing: 0.5px; }
+.sc-signal.buy { background: rgba(38,163,123,0.18); color: var(--up); }
+.sc-signal.sell { background: rgba(229,72,77,0.18); color: var(--down); }
+.sc-signal.neutral { background: rgba(194,163,58,0.18); color: var(--neutral); }
+.sc-bar { height: 6px; background: #0a0e14; border-radius: 4px; overflow: hidden; margin-bottom: 6px; }
+.sc-bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+.sc-bar-fill.buy { background: var(--up); }
+.sc-bar-fill.sell { background: var(--down); }
+.sc-bar-fill.neutral { background: var(--neutral); }
+.sc-meta { display: flex; gap: 8px; align-items: baseline; }
+.sc-strength { font-size: 0.75rem; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; min-width: 20px; }
+.sc-reason { font-size: 0.72rem; color: var(--muted); }
+
+/* --- History -------------------------------------------------------------- */
+.history { display: flex; flex-direction: column; gap: 4px; max-height: 460px; overflow-y: auto; }
+.hist-row { display: grid; grid-template-columns: 70px 1fr auto 48px; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 6px; background: var(--panel-2); font-size: 0.74rem; }
+.ht-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.ht-sym { color: var(--text); }
+.ht-verdict { font-weight: 700; font-size: 0.72rem; }
+.ht-score { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
+
+/* --- Footer --------------------------------------------------------------- */
+.footer { text-align: center; padding: 20px 16px; font-size: 0.74rem; color: var(--muted); border-top: 1px solid var(--border); margin-top: 8px; }
+
+/* --- Responsive ----------------------------------------------------------- */
+@media (max-width: 860px) {
+  .top-panel { grid-template-columns: 1fr; }
+  .grid-2 { grid-template-columns: 1fr; }
+  .plan-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 560px) {
+  :root { font-size: 14px; }
+  .topbar { flex-direction: column; align-items: stretch; }
+  .controls { justify-content: space-between; }
+  input[type="text"] { flex: 1; min-width: 120px; }
+  .strategy-grid { grid-template-columns: 1fr; }
+  .price { font-size: 1.8rem; }
+  .chart { height: 300px; }
+  .hist-row { grid-template-columns: 58px 1fr auto 40px; }
+}
