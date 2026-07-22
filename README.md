@@ -14,6 +14,20 @@ setups.
 
 ## How to run
 
+### Easiest: one-click launcher
+
+- **Windows:** double-click **`run.bat`**.
+- **macOS / Linux:** run **`./run.sh`** (first time: `chmod +x run.sh`).
+
+You get a small menu that can start the dashboard (and open your browser), run
+the indicator tests, or run the backtest. The launcher auto-detects Python /
+Node and falls back to `npx serve` if Python isn't installed. This is a plain
+text script — open it to see exactly what it does. (No `.exe` is provided on
+purpose: an unsigned binary would be flagged by Windows SmartScreen and can't be
+inspected the way a `.bat`/`.sh` can.)
+
+### Manual
+
 Because it uses ES modules, you must serve it over HTTP (opening `index.html`
 directly with `file://` will not load the modules). From this folder:
 
@@ -158,6 +172,7 @@ js/config.js          All weights, thresholds, periods, defaults (edit here)
 js/indicators.js      Pure indicator math (audit/tweak here)
 js/strategies/        One file per strategy + index.js registry
 backtest.js           Replay candles through the engine; measure 1.5R/3R + sweep thresholds
+run.bat / run.sh      One-click launcher menu (Windows / macOS-Linux)
 tests/indicators.test.js   Node test of the indicator math
 README.md
 ```
