@@ -5,7 +5,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node tests/indicators.test.js",
+    "test": "node tests/indicators.test.js && node tests/setups.test.js",
     "serve": "python3 -m http.server 8000",
     "backtest": "node backtest.js",
     "backtest:demo": "node backtest.js --demo"

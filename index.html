@@ -3,88 +3,75 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Crypto Confluence Signal Dashboard</title>
+  <title>Crypto Trade-Plan Generator</title>
   <link rel="stylesheet" href="css/style.css" />
+  <!-- TradingView Lightweight Charts (v4 standalone) from CDN. -->
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <span class="logo">▲▼</span>
       <div>
-        <h1>Confluence Signals</h1>
-        <p class="subtitle">10-strategy composite · educational tool</p>
+        <h1>Trade-Plan Generator</h1>
+        <p class="subtitle">setup-driven signals · educational tool</p>
       </div>
     </div>
-
     <div class="controls">
-      <select id="pairSelect" title="Quick-pick pair" aria-label="Pair"></select>
-      <input id="pairInput" type="text" placeholder="Any pair, e.g. ADAUSDT" aria-label="Custom pair" />
-      <select id="intervalSelect" title="Timeframe" aria-label="Timeframe"></select>
+      <select id="pairSelect" aria-label="Pair"></select>
+      <input id="pairInput" type="text" placeholder="Any pair e.g. ADAUSDT" aria-label="Custom pair" />
+      <select id="intervalSelect" aria-label="Timeframe"></select>
       <button id="refreshBtn" class="btn primary">Refresh</button>
-      <button id="autoToggle" class="btn">Auto-refresh: OFF</button>
+      <button id="autoToggle" class="btn">Auto: OFF</button>
+      <button id="notifyToggle" class="btn">🔔 Alerts: OFF</button>
     </div>
   </header>
 
   <div id="statusBar" class="status-bar">Starting…</div>
 
   <main>
-    <!-- Top: price + composite verdict -->
-    <section class="panel top-panel">
-      <div class="price-block">
-        <div class="price-row">
-          <span id="price" class="price">—</span>
-          <span id="change" class="change">—</span>
-        </div>
-        <div class="tags">
-          <span id="sourceTag" class="tag">Source: —</span>
-          <span id="lastUpdate" class="tag muted">—</span>
-        </div>
-      </div>
-
-      <div class="verdict-block">
-        <div class="verdict-head">
-          <span id="verdict" class="verdict">—</span>
-          <span id="hqBadge" class="hq-badge" hidden>★ HIGH QUALITY SIGNAL</span>
-        </div>
-        <div class="gauge">
-          <div class="gauge-track">
-            <div class="gauge-mid"></div>
-            <div id="gaugeFill" class="gauge-fill"></div>
-          </div>
-          <div class="gauge-labels">
-            <span>-100 Sell</span>
-            <span id="gaugeValue" class="gauge-value">0</span>
-            <span>Buy +100</span>
-          </div>
-        </div>
-        <div id="agree" class="agree">—</div>
-        <div id="plan" class="plan"></div>
-      </div>
+    <!-- Price strip -->
+    <section class="price-strip">
+      <span id="price" class="price">—</span>
+      <span id="change" class="change">—</span>
+      <span id="sourceTag" class="tag">Source: —</span>
+      <span id="htfTag" class="tag">HTF: —</span>
+      <span id="lastUpdate" class="tag muted">—</span>
     </section>
 
-    <!-- Middle: candlestick chart -->
+    <!-- HERO: the trade plan (ACTIVE) or NO TRADE -->
+    <section id="hero" class="hero notrade">
+      <div class="nt-badge">NO TRADE</div>
+      <div class="nt-title">Loading…</div>
+    </section>
+
+    <!-- Charts -->
     <section class="panel chart-panel">
-      <h2 class="panel-title">Price</h2>
-      <canvas id="chart" class="chart"></canvas>
+      <div class="chart-tabs">
+        <button id="tabLw" class="chart-tab active">Signal chart</button>
+        <button id="tabAdv" class="chart-tab">TradingView Advanced</button>
+        <span id="chartNote" class="chart-note">Programmatic trade-plan levels (entry / SL / TP) are drawn on this Lightweight chart.</span>
+      </div>
+      <div id="lwChart" class="chart"></div>
+      <div id="advChart" class="chart" hidden></div>
     </section>
 
-    <!-- Bottom: strategy cards + history -->
+    <!-- Strategies + history -->
     <section class="grid-2">
       <div class="panel">
-        <h2 class="panel-title">Strategies (10)</h2>
+        <h2 class="panel-title">Confirmations (10 strategies)</h2>
         <div id="strategyGrid" class="strategy-grid"></div>
       </div>
-
       <div class="panel">
-        <h2 class="panel-title">Signal history <span class="muted">(this session)</span></h2>
+        <h2 class="panel-title">Plan history <span class="muted">(this session)</span></h2>
         <div id="history" class="history"></div>
       </div>
     </section>
   </main>
 
   <footer class="footer">
-    Educational tool — not financial advice. Signals are illustrative and may be wrong.
-    Data from Binance / CoinGecko public APIs. Do your own research.
+    Educational tool — not financial advice. Setups, entries and targets are illustrative and may be wrong.
+    Data from Binance / CoinGecko public APIs. Do your own research and manage your own risk.
   </footer>
 
   <script type="module" src="js/main.js"></script>

@@ -1,68 +1,76 @@
 // ============================================================================
-// config.js — All tunable knobs in one place. Edit this file to change how the
-// dashboard behaves: strategy weights, classification thresholds, indicator
-// periods, default pair/timeframe, refresh cadence, risk-management multiples.
+// config.js — All tunable knobs in one place.
 //
-// Nothing here touches the DOM or the network — it is plain data.
+// This build is a *trade-plan generator*, not a verdict meter. The important
+// knobs are the confluence GATE (what must be true to emit a plan) and the
+// SETUP definitions. Everything here is plain data — no DOM, no network.
 // ============================================================================
 
 export const CONFIG = {
   // -- Data / UI defaults ---------------------------------------------------
   defaultPair: "BTCUSDT",
   defaultInterval: "15m",
-  candleLimit: 300, // how many klines to request
+  candleLimit: 400, // how many klines to request for the active timeframe
+  htfCandleLimit: 300, // klines for the higher timeframe bias
   autoRefreshSeconds: 60,
 
-  // Quick-pick pairs for the dropdown. The free-text box accepts ANY Binance
-  // symbol, so this is just for convenience.
   pairs: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"],
-
-  // Supported timeframes. Value = Binance interval string.
   intervals: ["5m", "15m", "1h", "4h", "1d"],
 
-  // -- Strategy weights -----------------------------------------------------
-  // Used by the confluence engine. They do NOT need to sum to any particular
-  // number — the composite is a weighted average, so only the RELATIVE sizes
-  // matter. Per request, RSI-divergence, SMC and S/R breakout carry a bit more
-  // weight than the trend/oscillator strategies.
+  // Higher-timeframe used for bias per active timeframe. Lower timeframes lean
+  // on ~1h so a scalper isn't fighting the intraday trend.
+  htfMap: { "5m": "1h", "15m": "1h", "1h": "4h", "4h": "1d", "1d": "1w" },
+
+  // -- Strategy weights (used for the confirmation count / tie-breaks) -------
+  // The three "top-weighted" strategies whose active disagreement VETOES a
+  // setup are listed in `gate.vetoStrategies`.
   weights: {
     ema: 1.0,
-    rsi: 1.3, // RSI + divergence — emphasised
+    rsi: 1.3, // RSI + divergence
     macd: 1.0,
     bollinger: 0.9,
     ichimoku: 1.0,
     stochastic: 0.8,
     vwap: 0.9,
-    sr: 1.3, // Support/Resistance breakout — emphasised
-    smc: 1.3, // Smart Money Concepts — emphasised
+    sr: 1.3, // Support/Resistance
+    smc: 1.3, // Smart Money Concepts
     volume: 0.8,
   },
 
-  // -- Confluence classification (composite ranges from -100..+100) ---------
-  thresholds: {
-    strongBuy: 60, // composite >=  60  => STRONG BUY
-    buy: 25, // composite >=  25  => BUY
-    sell: -25, // composite <= -25  => SELL
-    strongSell: -60, // composite <= -60  => STRONG SELL
-    // anything strictly between sell and buy (-24..24) => NEUTRAL
+  // -- The confluence GATE (the "high quality" filter) ----------------------
+  gate: {
+    minAgree: 6, // >=6 of 10 strategies must agree with the setup direction
+    vetoStrategies: ["rsi", "smc", "sr"], // none of these may actively contradict
+    triggerRecencyBars: 3, // a setup "event" must be within the last N closed bars
+    minRR: 1.2, // reward:risk to TP1 must be >= this after entry/stop computed
+    tp1R: 1.5, // TP1 at 1.5R
+    tp2R: 3.0, // TP2 at 3.0R
+    // Tiering by number of aligned strategies (setup already required):
+    tiers: {
+      aPlusAgree: 8, // A+ needs >=8 aligned AND HTF strongly agrees
+      aAgree: 7, // A needs >=7 aligned
+      bAgree: 6, // B needs >=6 aligned
+    },
+    requireHtfAlignment: true, // reject setups that fight the HTF bias
   },
 
-  // -- "High Quality Signal" gate -------------------------------------------
-  highQuality: {
-    minAgreeing: 7, // >= 7 of 10 strategies must agree on the direction
-    minComposite: 60, // AND |composite| must be >= 60
+  // -- Setup definitions / enable switches ----------------------------------
+  // Set enabled:false to disable a setup by default (e.g. if the backtest shows
+  // negative expectancy on your market/timeframe).
+  setups: {
+    sweep_reverse: { enabled: true, atrBuffer: 0.5 },
+    divergence_reversal: { enabled: true, atrBuffer: 0.5 },
+    breakout_retest: { enabled: true, atrBuffer: 0.35, retestPad: 0.25 },
+    trend_pullback: { enabled: true, atrBuffer: 0.6, nearBand: 0.6 },
   },
 
-  // -- Risk-management scaffold for high-quality signals --------------------
+  // -- Risk-management scaffold ---------------------------------------------
   risk: {
     atrPeriod: 14,
-    atrStopMultiplier: 1.5, // stop = entry -/+ ATR * this (fallback if no swing)
-    tp1R: 1.5, // first take-profit at 1.5 R
-    tp2R: 3.0, // second take-profit at 3.0 R
-    entryZonePct: 0.0015, // +/- 0.15% band around price for the entry zone
+    entryZonePct: 0.0015, // fallback zone half-width when a setup has no natural zone
   },
 
-  // -- Indicator periods (shared defaults; individual strategies read these) -
+  // -- Indicator periods ----------------------------------------------------
   indicators: {
     emaFast: 9,
     emaSlow: 21,
@@ -75,7 +83,19 @@ export const CONFIG = {
     stochK: 14,
     stochSmooth: 3,
     stochD: 3,
-    pivotLeft: 2, // fractal pivot lookback (swing detection)
+    pivotLeft: 2,
     pivotRight: 2,
+  },
+
+  // -- Backtest defaults ----------------------------------------------------
+  backtest: {
+    maxBarsToFill: 20, // give up on an unfilled limit entry after N bars
+    warmup: 120, // bars of history before the first evaluated signal
+  },
+
+  // -- UI niceties ----------------------------------------------------------
+  notifications: {
+    enabled: false, // toggled from the UI; browser notification + sound on A/A+
+    minTierForAlert: "A", // "A+" | "A" | "B"
   },
 };

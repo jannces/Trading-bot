@@ -1,148 +1,102 @@
 // ============================================================================
-// chart.js — Dependency-free canvas candlestick chart.
+// chart.js — TradingView Lightweight Charts wrapper.
 //
-// Draws the fetched candles with a price grid, a volume histogram along the
-// bottom, and a dashed last-price line. Handles high-DPI (devicePixelRatio)
-// so it stays crisp on phones, and is fully responsive to its container width.
+// Uses the global `LightweightCharts` loaded from a CDN <script> in index.html
+// (v4 standalone build). Draws candlesticks + a volume histogram, and — when a
+// trade plan is active — price lines for the entry zone, stop, TP1 and TP2, plus
+// a marker on the trigger candle. Programmatic levels live HERE (the embedded
+// Advanced widget can't be drawn on).
 // ============================================================================
 
-const COLORS = {
-  bg: "#0d1117",
-  grid: "#1b2430",
-  text: "#7d8ea3",
-  up: "#26a37b",
-  down: "#e5484d",
-  volUp: "rgba(38,163,123,0.35)",
-  volDown: "rgba(229,72,77,0.35)",
-  lastLine: "#e3b341",
-};
-
-/**
- * @param canvas HTMLCanvasElement
- * @param candles [{ time, open, high, low, close, volume }]
- */
-export function drawChart(canvas, candles) {
-  const ctx = canvas.getContext("2d");
-  const dpr = window.devicePixelRatio || 1;
-
-  // Size the backing store to the CSS box * dpr for crisp lines.
-  const cssW = canvas.clientWidth || 800;
-  const cssH = canvas.clientHeight || 380;
-  canvas.width = Math.round(cssW * dpr);
-  canvas.height = Math.round(cssH * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-  ctx.clearRect(0, 0, cssW, cssH);
-  ctx.fillStyle = COLORS.bg;
-  ctx.fillRect(0, 0, cssW, cssH);
-
-  if (!candles || candles.length === 0) {
-    drawText(ctx, "No data", cssW / 2, cssH / 2, COLORS.text, "center");
-    return;
+export function createChartManager(container) {
+  if (typeof LightweightCharts === "undefined") {
+    container.innerHTML =
+      '<div class="chart-fallback">TradingView Lightweight Charts failed to load ' +
+      "(offline or CDN blocked). Candles are unavailable, but signals still work.</div>";
+    return { update() {}, setPlan() {}, clearPlan() {}, remove() {} };
   }
 
-  // Layout: price panel on top, volume strip at bottom.
-  const padL = 8;
-  const padR = 62; // room for the price axis labels on the right
-  const padT = 10;
-  const padB = 18;
-  const volH = Math.min(70, cssH * 0.22);
-  const priceH = cssH - padT - padB - volH;
-  const plotW = cssW - padL - padR;
+  const chart = LightweightCharts.createChart(container, {
+    layout: { background: { color: "#0f1620" }, textColor: "#9fb0c3" },
+    grid: { vertLines: { color: "#182231" }, horzLines: { color: "#182231" } },
+    rightPriceScale: { borderColor: "#1e2a3a" },
+    timeScale: { borderColor: "#1e2a3a", timeVisible: true, secondsVisible: false },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    autoSize: true,
+  });
 
-  // Show at most the last N candles that fit comfortably.
-  const maxBars = Math.max(30, Math.floor(plotW / 6));
-  const view = candles.slice(-maxBars);
-  const n = view.length;
+  const candleSeries = chart.addCandlestickSeries({
+    upColor: "#26a37b", downColor: "#e5484d",
+    borderUpColor: "#26a37b", borderDownColor: "#e5484d",
+    wickUpColor: "#26a37b", wickDownColor: "#e5484d",
+  });
 
-  let hi = -Infinity;
-  let lo = Infinity;
-  let maxVol = 0;
-  for (const c of view) {
-    if (c.high > hi) hi = c.high;
-    if (c.low < lo) lo = c.low;
-    if (c.volume > maxVol) maxVol = c.volume;
-  }
-  const range = hi - lo || hi * 0.01 || 1;
-  hi += range * 0.04;
-  lo -= range * 0.04;
+  const volumeSeries = chart.addHistogramSeries({
+    priceFormat: { type: "volume" },
+    priceScaleId: "", // overlay on its own hidden scale
+  });
+  volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
 
-  const priceToY = (p) => padT + ((hi - p) / (hi - lo)) * priceH;
-  const volTop = padT + priceH + 6;
-  const step = plotW / n;
-  const bodyW = Math.max(1, Math.min(step * 0.7, 14));
+  let priceLines = [];
 
-  // --- Grid + price axis (5 horizontal lines) ----------------------------
-  ctx.strokeStyle = COLORS.grid;
-  ctx.lineWidth = 1;
-  ctx.font = "11px ui-monospace, monospace";
-  ctx.textBaseline = "middle";
-  const gridLines = 5;
-  for (let g = 0; g <= gridLines; g++) {
-    const p = hi - ((hi - lo) * g) / gridLines;
-    const y = priceToY(p);
-    ctx.beginPath();
-    ctx.moveTo(padL, y);
-    ctx.lineTo(padL + plotW, y);
-    ctx.stroke();
-    drawText(ctx, formatPrice(p), padL + plotW + 4, y, COLORS.text, "left");
+  function toSec(ms) { return Math.floor(ms / 1000); }
+
+  function update(candles) {
+    candleSeries.setData(
+      candles.map((c) => ({ time: toSec(c.time), open: c.open, high: c.high, low: c.low, close: c.close }))
+    );
+    volumeSeries.setData(
+      candles.map((c) => ({
+        time: toSec(c.time),
+        value: c.volume,
+        color: c.close >= c.open ? "rgba(38,163,123,0.5)" : "rgba(229,72,77,0.5)",
+      }))
+    );
   }
 
-  // --- Candles + volume --------------------------------------------------
-  for (let i = 0; i < n; i++) {
-    const c = view[i];
-    const cx = padL + i * step + step / 2;
-    const up = c.close >= c.open;
-    const color = up ? COLORS.up : COLORS.down;
+  function clearPlan() {
+    for (const l of priceLines) candleSeries.removePriceLine(l);
+    priceLines = [];
+    candleSeries.setMarkers([]);
+  }
 
-    // Wick.
-    ctx.strokeStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(cx, priceToY(c.high));
-    ctx.lineTo(cx, priceToY(c.low));
-    ctx.stroke();
+  function setPlan(plan, candles) {
+    clearPlan();
+    if (!plan) return;
+    const line = (price, color, title, style) =>
+      priceLines.push(
+        candleSeries.createPriceLine({
+          price,
+          color,
+          lineWidth: 1,
+          lineStyle: style ?? LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: true,
+          title,
+        })
+      );
+    line(plan.entryHigh, "#3d7dff", "Entry", LightweightCharts.LineStyle.Solid);
+    line(plan.entryLow, "#3d7dff", "Entry", LightweightCharts.LineStyle.Solid);
+    line(plan.stop, "#e5484d", "SL");
+    line(plan.tp1, "#26a37b", "TP1");
+    line(plan.tp2, "#7d8ea3", "TP2");
 
-    // Body.
-    const yOpen = priceToY(c.open);
-    const yClose = priceToY(c.close);
-    const top = Math.min(yOpen, yClose);
-    const h = Math.max(1, Math.abs(yClose - yOpen));
-    ctx.fillStyle = color;
-    ctx.fillRect(cx - bodyW / 2, top, bodyW, h);
-
-    // Volume bar.
-    if (maxVol > 0) {
-      const vh = (c.volume / maxVol) * volH;
-      ctx.fillStyle = up ? COLORS.volUp : COLORS.volDown;
-      ctx.fillRect(cx - bodyW / 2, volTop + (volH - vh), bodyW, vh);
+    // Marker on the trigger candle.
+    const trig = candles[plan.triggerIndex];
+    if (trig) {
+      const long = plan.direction === "LONG";
+      candleSeries.setMarkers([
+        {
+          time: toSec(trig.time),
+          position: long ? "belowBar" : "aboveBar",
+          color: long ? "#26a37b" : "#e5484d",
+          shape: long ? "arrowUp" : "arrowDown",
+          text: `${plan.tier} ${plan.direction}`,
+        },
+      ]);
     }
   }
 
-  // --- Last price dashed line + tag --------------------------------------
-  const lastP = view[n - 1].close;
-  const lastY = priceToY(lastP);
-  ctx.strokeStyle = COLORS.lastLine;
-  ctx.setLineDash([4, 3]);
-  ctx.beginPath();
-  ctx.moveTo(padL, lastY);
-  ctx.lineTo(padL + plotW, lastY);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.fillStyle = COLORS.lastLine;
-  ctx.fillRect(padL + plotW, lastY - 8, padR, 16);
-  drawText(ctx, formatPrice(lastP), padL + plotW + 4, lastY, "#0d1117", "left");
-}
+  function remove() { chart.remove(); }
 
-function drawText(ctx, text, x, y, color, align) {
-  ctx.fillStyle = color;
-  ctx.textAlign = align;
-  ctx.fillText(text, x, y);
-}
-
-/** Compact price formatting that adapts to magnitude (crypto spans orders). */
-function formatPrice(p) {
-  if (p >= 1000) return p.toLocaleString("en-US", { maximumFractionDigits: 1 });
-  if (p >= 1) return p.toFixed(2);
-  if (p >= 0.01) return p.toFixed(4);
-  return p.toPrecision(3);
+  return { update, setPlan, clearPlan, remove, chart };
 }
