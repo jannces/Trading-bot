@@ -1,4 +1,9 @@
 node_modules/
+# Local validation artifacts (fetched snapshots + run outputs). Hand these back
+# by zipping the results/<timestamp> folder (see RUN_ME.md), or `git add -f`.
+data/
+klines/
+results/
 .DS_Store
 *.log
 ledger.json

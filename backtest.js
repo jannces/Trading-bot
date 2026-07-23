@@ -39,9 +39,11 @@ async function main() {
   const compare = args.includes("--compare");
   const dataIdx = args.indexOf("--data");
   const dataDir = dataIdx !== -1 ? args[dataIdx + 1] : null;
+  const jsonIdx = args.indexOf("--json");
+  const jsonPath = jsonIdx !== -1 ? args[jsonIdx + 1] : null; // structured summary sidecar
   const splitIdx = args.indexOf("--split");
   const doSplit = splitIdx !== -1;
-  const pos = args.filter((a, i) => !a.startsWith("--") && !(dataIdx !== -1 && i === dataIdx + 1));
+  const pos = args.filter((a, i) => !a.startsWith("--") && !((dataIdx !== -1 && i === dataIdx + 1) || (jsonIdx !== -1 && i === jsonIdx + 1)));
   const nums = pos.filter((a) => /^\d+$/.test(a));
   const words = pos.filter((a) => !/^\d+$/.test(a));
   const floats = pos.filter((a) => /^\d*\.\d+$/.test(a));
@@ -101,7 +103,8 @@ async function main() {
   // --- Compare mode: 1m vs 5m over the same period, with per-setup verdicts ---
   if (compare) {
     const cmpTfs = words.length >= 2 ? words.slice(0, 2) : ["1m", "5m"];
-    await runCompare(symbols, cmpTfs, provider, fetchHtf, htfTf, regimeTf, limit, demo, scan);
+    const cmpSummary = await runCompare(symbols, cmpTfs, provider, fetchHtf, htfTf, regimeTf, limit, demo, scan, dataDir);
+    writeJson(jsonPath, cmpSummary);
     return finish();
   }
 
@@ -119,7 +122,8 @@ async function main() {
       try { candles = await provider.getKlines(sym, tf, limit); } catch (e) { console.log(`fetch failed: ${e.message}`); return finish(); }
       seriesList = [{ sym, candles, htf, regime }];
     }
-    runWalkForward(seriesList, tf);
+    const walkSummary = runWalkForward(seriesList, tf);
+    writeJson(jsonPath, walkSummary);
     return finish();
   }
 
@@ -146,7 +150,11 @@ async function main() {
     }
   }
 
-  if (all.length === 0) { console.log("No filled trades on this sample."); return finish(); }
+  if (all.length === 0) {
+    console.log("No filled trades on this sample.");
+    writeJson(jsonPath, summarizeTrades(all, matrix ? "matrix" : "normal", tf, timeframes));
+    return finish();
+  }
 
   // --- Reports -------------------------------------------------------------
   if (scan && !matrix) { console.log("BY PAIR"); reportGroups(groupBy(all, (t) => t.pair)); console.log(""); }
@@ -161,11 +169,39 @@ async function main() {
 
   if (doSplit) reportSplit(all, splitFrac);
   reportNegative(all);
+  writeJson(jsonPath, summarizeTrades(all, matrix ? "matrix" : "normal", tf, timeframes));
   finish();
 }
 
 function finish() {
   console.log("\nSmall single-sample study; conservative fills; net = after fees+slippage. Not financial advice.");
+}
+
+// Structured sidecar so analyze-results.js never has to regex-parse the tables.
+function writeJson(jsonPath, obj) {
+  if (!jsonPath) return;
+  fs.mkdirSync(path.dirname(path.resolve(jsonPath)), { recursive: true });
+  fs.writeFileSync(jsonPath, JSON.stringify(obj, null, 2));
+  console.log(`\n(structured summary -> ${jsonPath})`);
+}
+
+// Aggregate a --matrix/normal trade list into per-setup / per-setup×tf / per-tier
+// stats + the negative-expectancy suggestions (same grouping the tables print).
+function summarizeTrades(all, mode, tf, timeframes) {
+  const grp = (keyFn) => { const o = groupBy(all, keyFn); const r = {}; for (const k of Object.keys(o)) r[k] = { ...stats(o[k]) }; return r; };
+  const bySetupNet = groupBy(all, (t) => t.setupId);
+  const byComboNet = groupBy(all, (t) => `${t.setupId}@${t.tf}`);
+  return {
+    mode, tf, timeframes, generatedAt: new Date().toISOString(), n: all.length,
+    bySetup: grp((t) => t.setupId),
+    bySetupTf: grp((t) => `${t.setupId}@${t.tf}`),
+    byTier: grp((t) => t.tier),
+    byMatrix: grp((t) => `${t.setupName} | ${t.tf} | ${t.tier}`),
+    overall: stats(all),
+    // Mirrors reportNegative: setups with negative mean net; combos need n>=5.
+    negSetups: Object.entries(bySetupNet).filter(([, ts]) => mean(ts.map((t) => t.netR)) < 0).map(([id]) => id),
+    negCombos: Object.entries(byComboNet).filter(([, ts]) => mean(ts.map((t) => t.netR)) < 0 && ts.length >= 5).map(([k]) => k),
+  };
 }
 
 // --- Replay one series (optionally only bars in [from,to)) -----------------
@@ -367,23 +403,33 @@ function reportNegative(all) {
 }
 
 // --- Compare two timeframes over the same period, with per-setup verdicts ---
-async function runCompare(symbols, cmpTfs, provider, fetchHtf, htfTf, regimeTf, limit, demo, scan) {
+async function runCompare(symbols, cmpTfs, provider, fetchHtf, htfTf, regimeTf, limit, demo, scan, dataDir) {
   const [tfA, tfB] = cmpTfs;
   const minV = CONFIG.backtest.minTradesForVerdict;
   const baseTf = cmpTfs.slice().sort((a, b) => intervalMinutes(b) - intervalMinutes(a))[0]; // longest -> size HTF for it
   const trades = { [tfA]: [], [tfB]: [] };
 
-  console.log(`COMPARE ${tfA} vs ${tfB} — ${scan ? `top-${symbols.length}` : symbols[0]} · ${limit} candles · min ${minV} trades for a verdict\n`);
-  for (const sym of symbols) {
-    const htf = await fetchHtf(sym, htfTf, baseTf);
-    const regime = await fetchHtf(sym, regimeTf, baseTf);
+  console.log(`COMPARE ${tfA} vs ${tfB} — ${dataDir ? `--data ${dataDir}` : scan ? `top-${symbols.length}` : symbols[0]} · ${dataDir ? "loaded" : limit + " candles"} · min ${minV} trades for a verdict\n`);
+  if (dataDir) {
+    // Offline: load each TF's series from the committed --data files (windowed
+    // replay = same trailing window as live).
     for (const tf of cmpTfs) {
-      let candles;
-      try { candles = await provider.getKlines(sym, tf, limit); }
-      catch (e) { if (!scan) throw e; continue; }
-      if (!candles || candles.length < CONFIG.backtest.warmup + 30) continue;
-      for (const tr of replay(candles, sym, tf, htf, regime)) trades[tf].push(tr);
-      if (!demo) await sleep(CONFIG.timing.klineStaggerMs);
+      for (const s of loadDataDir(dataDir, tf, htfTf, regimeTf)) {
+        for (const tr of replay(s.candles, s.sym, tf, s.htf, s.regime)) trades[tf].push(tr);
+      }
+    }
+  } else {
+    for (const sym of symbols) {
+      const htf = await fetchHtf(sym, htfTf, baseTf);
+      const regime = await fetchHtf(sym, regimeTf, baseTf);
+      for (const tf of cmpTfs) {
+        let candles;
+        try { candles = await provider.getKlines(sym, tf, limit); }
+        catch (e) { if (!scan) throw e; continue; }
+        if (!candles || candles.length < CONFIG.backtest.warmup + 30) continue;
+        for (const tr of replay(candles, sym, tf, htf, regime)) trades[tf].push(tr);
+        if (!demo) await sleep(CONFIG.timing.klineStaggerMs);
+      }
     }
   }
 
@@ -404,13 +450,20 @@ async function runCompare(symbols, cmpTfs, provider, fetchHtf, htfTf, regimeTf, 
   console.log("  " + pad("setup", 20) + pad(`${tfA}`, 20) + pad(`${tfB}`, 20) + "verdict");
   console.log("  " + "-".repeat(78));
   const setups = [...new Set([...trades[tfA], ...trades[tfB]].map((t) => t.setupName))];
+  const perSetup = [];
   for (const name of setups) {
     const a = stats(trades[tfA].filter((t) => t.setupName === name));
     const b = stats(trades[tfB].filter((t) => t.setupName === name));
     const cell = (s) => `${fmtR(s.netAvg)}/${fmtPF(s.pf)}/${s.n}`;
-    console.log("  " + pad(name, 20) + pad(cell(a), 20) + pad(cell(b), 20) + compareVerdict(a, b, tfA, tfB, minV));
+    const verdict = compareVerdict(a, b, tfA, tfB, minV);
+    console.log("  " + pad(name, 20) + pad(cell(a), 20) + pad(cell(b), 20) + verdict);
+    perSetup.push({ name, a, b, verdict });
   }
   console.log("\nVerdicts use net expectancy; a TF needs >= min trades or its side is 'insufficient'. Not financial advice.");
+  return {
+    mode: "compare", tfA, tfB, generatedAt: new Date().toISOString(), minTradesForVerdict: minV,
+    overall: { [tfA]: sA, [tfB]: sB }, perSetup,
+  };
 }
 
 // --- Walk-forward (single pair, or multiple pooled pairs) -------------------
@@ -429,10 +482,18 @@ function runWalkForward(seriesList, tf) {
   console.log(`  candles: ${total}${pairs > 1 ? " (ref)" : ""} · warm-up: ${warmup} · usable: ${fold.usable} · train ${W.trainBars}/test ${W.testBars} bars · folds ${fold.folds.length} · coverage ${fold.coveragePct.toFixed(0)}%`);
   if (pairs > 1) console.log(`  pooled candles across ${pairs} pairs: ${seriesList.reduce((s, x) => s + x.candles.length, 0)}`);
 
+  const base = {
+    mode: "walk", tf, generatedAt: new Date().toISOString(),
+    pairs, symbols: seriesList.map((s) => s.sym), refCandles: total,
+    pooledCandles: seriesList.reduce((s, x) => s + x.candles.length, 0),
+    warmup, usable: fold.usable, trainBars: W.trainBars, testBars: W.testBars,
+    folds: fold.folds.length, coveragePct: fold.coveragePct,
+  };
+
   if (fold.insufficient) {
     console.log(`\n  INSUFFICIENT DATA: ${fold.reason}.`);
     console.log(`  Fetch more candles (per-request limits apply) or pool pairs with --data <dir>.`);
-    return;
+    return { ...base, insufficient: true, reason: fold.reason, foldRows: [], includedFolds: 0, oos: { n: 0 } };
   }
 
   const tAt = (idx) => (idx >= total ? ref.candles[total - 1].time + 1 : ref.candles[idx].time);
@@ -460,6 +521,9 @@ function runWalkForward(seriesList, tf) {
   const fullTrades = poolCheapReplay(seriesList, rawFor(baseRecency), tf, tAt(warmup), tAt(total));
   const tradesPerBar = fold.usable > 0 ? fullTrades.length / fold.usable : 0;
   const warn = sizingWarning(tradesPerBar, W.testBars, warmup, W.trainBars, W.minTradesPerFoldWarn, pairs);
+  const sizingOut = warn
+    ? { ok: false, expected: warn.expected, threshold: W.minTradesPerFoldWarn, neededCandles: warn.neededCandles, neededPairs: warn.neededPairs }
+    : { ok: true, threshold: W.minTradesPerFoldWarn };
   if (warn) {
     console.log(`\n  ⚠ SIZING: ~${warn.expected.toFixed(1)} trades expected per ${W.testBars}-bar test window (< ${W.minTradesPerFoldWarn}).`);
     console.log(`     To reach ${W.minTradesPerFoldWarn}/fold: ~${fmtN(warn.neededCandles)} candles per pair, OR pool ~${fmtN(warn.neededPairs)} pairs via --data <dir>.`);
@@ -478,6 +542,7 @@ function runWalkForward(seriesList, tf) {
   console.log("  " + "-".repeat(94));
 
   const oosAll = [];
+  const foldRows = [];
   let included = 0;
   for (const F of fold.folds) {
     const tTrainFrom = tAt(F.trainFrom), tTrainTo = tAt(F.trainTo);
@@ -502,9 +567,15 @@ function runWalkForward(seriesList, tf) {
 
     if (!gate.selectable) {
       console.log("  " + pad(F.index, 6) + pad("— no selection —", 44) + pad(trainN, 8) + pad("—", 10) + pad(0, 7) + pad("—", 14) + gate.reason);
+      foldRows.push({ index: F.index, selectable: false, reason: gate.reason, trainN, testN: 0, included: false });
       continue;
     }
     if (gate.includeTest) { for (const t of testTrades) oosAll.push({ ...t, fold: F.index }); included++; }
+    foldRows.push({
+      index: F.index, selectable: true, chosen: best.g, trainN, trainNet: best.exp,
+      testN: testTrades.length, testNet: mean(testTrades.map((t) => t.netR)),
+      included: gate.includeTest, reason: gate.includeTest ? null : gate.reason,
+    });
     console.log("  " + pad(F.index, 6) + pad(`(${best.g.minAgree},${best.g.capScale},${best.g.expireBars},${best.g.recency})`, 44) + pad(trainN, 8) + pad(fmtR(best.exp), 10) + pad(testTrades.length, 7) + pad(fmtR(mean(testTrades.map((t) => t.netR))), 14) + (gate.includeTest ? "" : gate.reason));
   }
   // Restore config.
@@ -512,10 +583,20 @@ function runWalkForward(seriesList, tf) {
   CONFIG.scalper.stopCapPct[tf] = snap.cap; CONFIG.scalper.expireBars[tf] = snap.expire;
   CONFIG.gate.triggerRecencyBars = snap.recency;
 
+  // Params chosen by the folds that actually contributed OOS trades — the only
+  // ones Stage 4 may adopt (and only if the aggregate OOS is sound).
+  const selectedParams = foldRows.filter((r) => r.included).map((r) => r.chosen);
+  const grid_ = grid.length;
+
   console.log(`\nAGGREGATE OUT-OF-SAMPLE (${included}/${fold.folds.length} folds contributed):`);
-  if (oosAll.length) reportGroups({ OOS: oosAll }); else { console.log("  no OOS trades from qualifying folds."); return; }
+  if (!oosAll.length) {
+    console.log("  no OOS trades from qualifying folds.");
+    return { ...base, grid: grid_, sizing: sizingOut, foldRows, includedFolds: included, selectedParams: [], oos: { n: 0 } };
+  }
+  reportGroups({ OOS: oosAll });
   const e = mean(oosAll.map((t) => t.netR));
   console.log(`  -> walk-forward OOS net expectancy ${fmtR(e)} over ${oosAll.length} trades ${e > 0 ? "(positive)" : "(non-positive — be skeptical)"}`);
+  return { ...base, grid: grid_, sizing: sizingOut, foldRows, includedFolds: included, selectedParams, oos: { ...stats(oosAll), expectancy: e } };
 }
 
 /** Pool replay over a TIME range using PRECOMPUTED evaluateRaw (cheap gate only). */
