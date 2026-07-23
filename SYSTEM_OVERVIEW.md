@@ -50,7 +50,11 @@ auto-trader — it never places orders.
   outbound calls are `/api/klines` (for the detail chart) and loading the
   TradingView CDN scripts.
 - **Transport** browser⇄server is **SSE** (one-way push) + a couple of GET
-  endpoints. Not a websocket.
+  endpoints. Not a websocket. Events carry **monotonic ids**; on every
+  (re)connect the server sends a **full snapshot** (feed + ledger + prices +
+  status) before resuming deltas, so a dropped connection resyncs cleanly
+  (Last-Event-ID is read and acknowledged). `/api/klines` validates the symbol
+  against the current universe and whitelists intervals (400 otherwise).
 
 ---
 
@@ -166,9 +170,13 @@ count, HTF), **named contributors** with individual scores, a plain-language
   fill, entries/TPs as MAKER limit fills, stop/breakeven as TAKER market fills
   crossing the spread. `realizedR` == net. Both are stored per signal and both
   are shown; on scalps the net drag is material (often 0.2–0.4R/trade).
-- **Ledger** (`ledger.json`, persisted, survives restarts): one immutable record
-  per signal (`realizedR` net + `grossR`). The UI summary shows, overall and per
-  setup type: signals (W/L), **win rate, avg net R, Net R (PnL), and gross→net**.
+- **Ledger** (persisted, survives restarts): one immutable record per signal
+  (`realizedR` net + `grossR`). Storage is **SQLite** (`ledger.db`) when
+  `better-sqlite3` is installed, else a **JSON** file (`ledger.json`); the store
+  auto-imports an existing JSON ledger into SQLite once. Export anytime with
+  `npm run export-ledger` (`node server.js --export-ledger [path]`). The UI
+  summary shows, overall and per setup type: signals (W/L), **win rate, avg net
+  R, Net R (PnL), and gross→net**.
 
 **Cost-model config keys (`config.costs`, fractions of price; 0.0005 = 0.05%):**
 
@@ -236,13 +244,15 @@ array (setup ids and `id@tf` combos with negative net expectancy).
 
 ## 9. Tech stack & files
 
-- **Runtime:** Node.js 18+ (ES modules, built-in `http`, global `fetch`); no
-  required runtime deps on the default path (`ws` only for the optional WS).
+- **Runtime:** Node.js 18+ (ES modules, built-in `http`, global `fetch`). No
+  required runtime deps on the default path; **optional** `better-sqlite3`
+  (ledger storage, JSON fallback) and `ws` (unverified websocket path).
 - **Frontend:** vanilla JS ES modules, no framework/build step; TradingView
   Lightweight Charts + Advanced widget from CDN.
 - **Key files:** `server.js`, `js/{config,mexc,scanner,confluence,setups,htf,
-  indicators,app,chart,tvwidget,mexcws,mockprovider}.js`, `js/strategies/*`,
-  `backtest.js`, `tests/*` (indicators, setups, mexc-parsing fixtures).
+  indicators,costs,ledgerstore,app,chart,tvwidget,mexcws,mockprovider}.js`,
+  `js/strategies/*`, `backtest.js`, `tests/*` (indicators, setups, mexc, costs,
+  scanner, regime, ledgerstore).
 - **Config:** everything tunable is in `js/config.js`.
 
 ---
@@ -273,12 +283,14 @@ Explicitly listed so a reviewer has hooks:
 6. **HTF divergence fixed (Phase 2):** the backtest now consumes real 15m klines
    sliced by time (`htf.htfSliceAtTime`), matching the live scanner. (The mock
    provider still derives its own 15m by resampling its 1m base — self-consistent.)
-7. **No auth / multi-user / persistence beyond a flat JSON ledger.** No database,
-   no historical analytics beyond the session summary.
-8. **Frontend has no state for reconnect gaps** (SSE reconnects but may miss
-   events between drops); no unit/e2e tests on the UI beyond a modal smoke check.
-9. **Contributor chips don't show per-contributor directional agreement** on
-   shorts, which can look contradictory.
+7. **Persistence improved (Phase 5):** SQLite (`better-sqlite3`) with a JSON
+   fallback + export command. Still no auth / multi-user, and analytics are the
+   session summary + the ledger table (no separate reporting UI).
+8. **SSE reconnect handled (Phase 5):** monotonic ids + full snapshot on every
+   (re)connect. Remaining: no delta replay buffer (snapshot supersedes), and no
+   automated e2e UI tests beyond the modal + server smoke checks.
+9. **Contributor direction shown (Phase 5):** each chip carries a ▲/▼ for its own
+   side, so bullish-named strategies on a short read as bearish, not contradictory.
 10. **Security/ops:** binds `0.0.0.0`-style local server with no rate limiting or
     input validation on `/api/klines` beyond basics; intended for localhost only.
 

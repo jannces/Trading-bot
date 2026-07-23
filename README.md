@@ -68,7 +68,9 @@ opt-in and must be verified first.**
 - Pushes `scan` / `prices` / `signal` / `ledger` events to the browser over
   **SSE** (`/events`). REST helpers: `/api/klines`, `/api/snapshot`,
   `/api/ledger`, `/api/status`.
-- Persists the signal ledger to **`ledger.json`** so history survives restarts.
+- Persists the signal ledger so history survives restarts — **SQLite**
+  (`ledger.db`, if `better-sqlite3` is installed) or a **JSON** file
+  (`ledger.json`) otherwise. Export anytime: `npm run export-ledger`.
 
 ### Scanner (`js/scanner.js`)
 - Re-evaluates each pair on 1m and 5m every cycle. **Pairs with no setup are not
@@ -180,7 +182,7 @@ Indicator math lives in `js/indicators.js` as auditable pure functions.
 ## Tests
 
 ```bash
-npm test        # runs all three suites
+npm test        # runs all suites (indicators, setups, mexc, costs, scanner, regime, ledgerstore)
 ```
 
 - `tests/indicators.test.js` — EMA/RSI/MACD/ATR/Bollinger math (hand-computed).
@@ -231,6 +233,7 @@ run.bat / run.sh        Launcher menus
 - **Charts need a CDN** (TradingView Lightweight Charts + the Advanced widget).
 - **Backtest HTF is resampled** from base candles (no look-ahead); the live
   scanner uses real 15m klines — a small, deliberate difference.
-- **Ledger** is a local JSON file (`ledger.json`); deleting it resets history.
+- **Ledger** is local (`ledger.db` SQLite or `ledger.json`); deleting it resets
+  history. `npm run export-ledger` writes a portable JSON copy.
 - **Thresholds are heuristic** — tune them in `config.js` using the backtest on
   real MEXC data, and disable any setup with negative expectancy.

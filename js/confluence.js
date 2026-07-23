@@ -125,12 +125,14 @@ function buildPlan(evald, htf, htfLabel, meta, results, candles, isForming) {
   const wantSignal = long ? "BUY" : "SELL";
   const tfl = meta.interval || "";
 
-  // Contributors: the setup itself + each aligned strategy, with a score.
-  const contributors = [{ name: SETUP_DISPLAY[s.id] || s.name, score: s.strength }];
+  // Contributors: the setup itself + each aligned strategy, with a score AND its
+  // own direction (so a bullish-sounding strategy name on a SHORT is clearly a
+  // bearish read, not a contradiction).
+  const contributors = [{ name: SETUP_DISPLAY[s.id] || s.name, score: s.strength, dir: s.direction }];
   const alignedStrengths = [];
   for (const r of results) {
     if (r.signal === wantSignal && r.strength >= 20) {
-      contributors.push({ name: r.name, score: r.strength });
+      contributors.push({ name: r.name, score: r.strength, dir: r.signal === "BUY" ? "LONG" : "SHORT" });
       alignedStrengths.push(r.strength);
     }
   }

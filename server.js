@@ -16,13 +16,13 @@
 // ============================================================================
 import http from "node:http";
 import fs from "node:fs";
-import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG } from "./js/config.js";
 import { Scanner } from "./js/scanner.js";
 import * as mexc from "./js/mexc.js";
 import { MockProvider } from "./js/mockprovider.js";
+import { createLedgerStore } from "./js/ledgerstore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MOCK = process.env.MOCK === "1" || process.argv.includes("--mock");
@@ -35,25 +35,29 @@ const provider = MOCK
 const scanner = new Scanner(provider);
 let wsStatus = MOCK ? "mock data" : `REST polling (${CONFIG.timing.pricePollMs}ms)`;
 
-// --- SSE clients -----------------------------------------------------------
+// --- SSE clients (monotonic event ids; snapshot on every (re)connect) -------
 const clients = new Set();
+let eventId = 0;
 function broadcast(obj) {
-  const line = `data: ${JSON.stringify(obj)}\n\n`;
+  const id = ++eventId;
+  const line = `id: ${id}\ndata: ${JSON.stringify(obj)}\n\n`;
   for (const res of clients) { try { res.write(line); } catch { /* dropped */ } }
 }
-
-// --- Ledger persistence ----------------------------------------------------
-const LEDGER = path.resolve(__dirname, CONFIG.server.ledgerPath);
-let saveTimer = null;
-async function loadLedger() {
-  try { scanner.setLedger(JSON.parse(await fsp.readFile(LEDGER, "utf8"))); console.log(`Ledger: loaded ${scanner.ledger.length} records`); }
-  catch { console.log("Ledger: starting fresh"); }
+/** Full current state (feed + ledger + summary + status + prices). */
+function fullSnapshot() {
+  const prices = {};
+  for (const s of scanner.symbols()) if (scanner.prices.has(s)) prices[s] = scanner.prices.get(s);
+  return { type: "scan", ...scanner.snapshot(wsStatus), prices };
 }
+
+// --- Ledger persistence (SQLite w/ JSON fallback) --------------------------
+const LEDGER_JSON = path.resolve(__dirname, CONFIG.server.ledgerPath);
+const LEDGER_DB = LEDGER_JSON.replace(/\.json$/, "") + ".db";
+let store = null;
+let saveTimer = null;
 function saveLedgerDebounced() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    try { await fsp.writeFile(LEDGER, JSON.stringify(scanner.ledger, null, 2)); } catch (e) { console.error("Ledger save failed:", e.message); }
-  }, 400);
+  saveTimer = setTimeout(() => { try { store.save(scanner.ledger); } catch (e) { console.error("Ledger save failed:", e.message); } }, 400);
 }
 
 scanner.onNewSignal = (sig) => broadcast({ type: "signal", signal: sig });
@@ -108,9 +112,14 @@ const server = http.createServer(async (req, res) => {
   if (u.pathname === "/api/ledger") return json(res, { ledger: scanner.ledger, summary: scanner.ledgerSummary() });
   if (u.pathname === "/api/snapshot") return json(res, scanner.snapshot(wsStatus));
   if (u.pathname === "/api/klines") {
-    const sym = u.searchParams.get("symbol");
+    const sym = (u.searchParams.get("symbol") || "").toUpperCase();
     const tf = u.searchParams.get("interval") || "5m";
-    const limit = Math.min(1000, parseInt(u.searchParams.get("limit") || "200", 10));
+    const limit = Math.min(1000, Math.max(1, parseInt(u.searchParams.get("limit") || "200", 10)));
+    // Validate: symbol must be in the current universe; interval whitelisted.
+    const universe = scanner.symbols();
+    const intervals = Object.keys(CONFIG.exchange.intervalMap);
+    if (!intervals.includes(tf)) return json(res, { error: `invalid interval '${tf}'` }, 400);
+    if (universe.length && !universe.includes(sym)) return json(res, { error: `symbol '${sym}' not in current universe` }, 400);
     try {
       const cached = scanner.klines.get(`${sym}:${tf}`);
       const candles = cached && cached.length >= limit ? cached.slice(-limit) : await provider.getKlines(sym, tf, limit);
@@ -123,7 +132,12 @@ const server = http.createServer(async (req, res) => {
 function sse(req, res) {
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
   res.write("retry: 3000\n\n");
-  res.write(`data: ${JSON.stringify({ type: "scan", ...scanner.snapshot(wsStatus) })}\n\n`);
+  const lastId = parseInt(req.headers["last-event-id"] || "", 10); // honored: we resync via a full snapshot
+  // Always send a full snapshot first so a fresh OR reconnecting client is
+  // completely caught up (supersedes any deltas missed during the drop).
+  const id = ++eventId;
+  if (Number.isFinite(lastId)) res.write(`: resuming after ${lastId} with full snapshot\n\n`);
+  res.write(`id: ${id}\ndata: ${JSON.stringify(fullSnapshot())}\n\n`);
   clients.add(res);
   const hb = setInterval(() => { try { res.write(": ping\n\n"); } catch { /* */ } }, 20000);
   req.on("close", () => { clearInterval(hb); clients.delete(res); });
@@ -145,7 +159,20 @@ function notFound(res) { res.writeHead(404); res.end("Not found"); }
 
 // --- Boot ------------------------------------------------------------------
 async function main() {
-  await loadLedger();
+  store = await createLedgerStore({ db: LEDGER_DB, json: LEDGER_JSON });
+
+  // CLI: `node server.js --export-ledger [path]` dumps the ledger to JSON and exits.
+  if (process.argv.includes("--export-ledger")) {
+    const out = process.argv[process.argv.indexOf("--export-ledger") + 1] || LEDGER_JSON;
+    const n = store.exportJson(path.resolve(__dirname, out.endsWith(".json") ? out : LEDGER_JSON));
+    console.log(`Exported ${n} ledger records to ${out} (backend: ${store.backend})`);
+    return;
+  }
+
+  const loaded = store.load();
+  scanner.setLedger(loaded);
+  console.log(`Ledger: ${loaded.length} records (backend: ${store.backend})`);
+
   await refreshTopSafe();
   setInterval(refreshTopSafe, CONFIG.scanner.listRefreshMs);
   server.listen(CONFIG.server.port, () => {

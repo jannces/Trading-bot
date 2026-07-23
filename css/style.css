@@ -65,6 +65,9 @@ h1, h2 { margin: 0; }
 
 .card-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
 .chip { font-size: 0.66rem; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); padding: 2px 7px; border-radius: 10px; }
+.chip .ca { font-size: 0.6rem; margin-right: 3px; }
+.chip .ca.long { color: var(--up); }
+.chip .ca.short { color: var(--down); }
 .card-missing { font-size: 0.72rem; color: var(--gold); margin-bottom: 8px; }
 
 .card-foot { display: flex; align-items: center; gap: 8px; }

@@ -85,7 +85,10 @@ function card(item) {
   const long = item.direction === "LONG";
   const d = document.createElement("div");
   d.className = `card ${item.kind} ${long ? "long" : "short"}`;
-  const chips = (item.contributors || []).map((c) => `<span class="chip">${esc(c.name)} · ${c.score}</span>`).join("");
+  const chips = (item.contributors || []).map((c) => {
+    const arrow = c.dir === "LONG" ? '<span class="ca long">▲</span>' : c.dir === "SHORT" ? '<span class="ca short">▼</span>' : "";
+    return `<span class="chip">${arrow}${esc(c.name)} · ${c.score}</span>`;
+  }).join("");
   const badge = statusBadge(item);
   const age = item.age != null ? `${item.age} bars` : item.kind === "forming" ? "forming" : "—";
   const cap = item.exposureCapped ? '<span class="badge b-exp" title="Beyond the same-direction exposure cap">EXP-CAP</span>' : "";
