@@ -338,6 +338,37 @@ The backtest's own real-provider fetches now page deep too (so `--limit` beyond
 The negative-expectancy report prints a suggested **`config.disabledSetups`**
 array (setup ids and `id@tf` combos with negative net expectancy).
 
+### End-to-end validation workflow (`npm run validate` → `analyze-results.js`)
+
+The full "is there an edge?" pipeline is three commands over a real snapshot,
+each producing a durable artifact:
+
+1. **`node fetch-data.js --out ./data --top 20 --limit 20000 --tfs 5m,15m,1h`** —
+   snapshot the scanner's universe (top-20 USDT pairs by volume + BTC) into
+   `./data`, then **`node verify-manifest.js ./data`** checks requested-vs-received,
+   continuity gaps, and prints the on-disk date range / candle counts (provenance).
+2. **`npm run validate`** (`validate.mjs`) — runs `--matrix`, `--compare 1m 5m`
+   (only if 1m is present; else records a `5m-only run`), and pooled `--walk 5m`
+   over `./data`, saving human tables **and** machine JSON to
+   `results/<timestamp>/`. It prints a **calibration** estimate (single-pair walk
+   timing × pair count) and **aborts if the projected walk exceeds 2 h**. Each mode
+   emits a `--json` sidecar so the analyzer never parses tables.
+3. **`node analyze-results.js results/<timestamp>/`** — applies the **conservative
+   verdict** and writes `results/<timestamp>/VALIDATION.md` + a **proposed
+   `js/config.js` diff** (never auto-applied): a setup×TF is proposed for
+   `disabledSetups` only with **negative net expectancy at n ≥
+   `backtest.minTradesForVerdict`**; walk-forward parameters are adopted only when
+   the aggregate OOS is both large enough **and** non-negative; everything thinner
+   is listed as **"unresolved — need more history"**. The bottom line states
+   plainly when a run is inconclusive for lack of data, or when no setup showed
+   positive net expectancy (in which case parameter tuning is *not* the fix).
+
+Because this build environment **cannot reach `api.mexc.com`** (sandbox network
+policy — `403 CONNECT`), no real snapshot was fetched here and none was
+synthesized. **`RUN_ME.md`** has the exact PowerShell commands to run the whole
+pipeline locally and hand the `results/<timestamp>/` folder back. `data/` and
+`results/` are gitignored.
+
 ---
 
 ## 9. Tech stack & files
@@ -350,9 +381,11 @@ array (setup ids and `id@tf` combos with negative net expectancy).
 - **Key files:** `server.js`, `js/{config,mexc,scanner,confluence,setups,htf,
   indicators,costs,ledgerstore,app,chart,tvwidget,mexcws,mockprovider}.js`,
   `js/{walk,verdict}.js`, `js/strategies/*`, `backtest.js`, `fetch-data.js`,
+  `verify-manifest.js`, `validate.mjs`, `analyze-results.js`, `RUN_ME.md`,
   `tests/*` (indicators, setups, mexc, costs, scanner, regime, ledgerstore,
-  timeframes, htflayer, verdict, session, walk, fetchdeep, replayperf, and the
-  `golden` byte-parity regression with committed fixtures).
+  timeframes, htflayer, verdict, session, walk, fetchdeep, replayperf,
+  verifymanifest, validate, analyzeresults, and the `golden` byte-parity
+  regression with committed fixtures).
 - **Config:** everything tunable is in `js/config.js`.
 
 ---
@@ -368,10 +401,15 @@ Explicitly listed so a reviewer has hooks:
    fetches only the last few candles and merges by open time (full refetch on
    gap/startup). Remaining win: kline **websocket** streams to drop polling
    entirely.
-3. **Signal quality is unvalidated on real data.** The gate/weights/guardrails
-   are heuristic; no real-money or large historical validation has been run
-   (build env couldn't reach MEXC). Needs real backtests + parameter tuning, and
-   ideally walk-forward / out-of-sample testing.
+3. **Signal quality — validation pipeline now exists; real-data numbers pending
+   a local run.** The gate/weights/guardrails are still heuristic, but the
+   *machinery* to test them on real data is built and tested: live-parity
+   **windowed replay**, deep paginated `fetch-data.js`, pooled walk-forward,
+   `npm run validate`, and the conservative `analyze-results.js` verdict →
+   `VALIDATION.md` (see §8 "End-to-end validation workflow"). What is **not** done
+   is the measurement itself: this build environment can't reach MEXC, so no real
+   snapshot has been run. Run **`RUN_ME.md`** locally to produce the numbers; until
+   then, treat all setups as unproven. No real-money validation has been done.
 4. **Outcome model — costs now included (Phase 1), gaps remain.** Fees +
    slippage + spread are modeled in `js/costs.js` (`config.costs`) and reported
    as gross vs net R. Still simplified: no funding, no partial fills, a single
