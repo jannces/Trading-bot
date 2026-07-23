@@ -36,22 +36,23 @@ regime layer.
 node fetch-data.js --out .\data --top 20 --limit 20000 --tfs 5m,15m,1h
 ```
 
-This pages backward through MEXC's ~500-rows-per-request cap, so it makes many
-requests and takes a few minutes. It writes `.\data\<SYMBOL>.json` per pair plus
-`.\data\manifest.json` (requested vs received, pages, gaps, stalls).
+This pages **forward** through MEXC's ~500-rows-per-request cap (via `startTime`,
+which MEXC treats as a lower bound), so it makes many requests and takes a few
+minutes. It writes `.\data\<SYMBOL>.json` per pair plus `.\data\manifest.json`
+(requested vs received, pages, gaps, `stalled`, `listedLate`, earliest/latest).
 
-> **If you see `PAGINATION STALL`** (e.g. "requested 20060, only 500 unique after
-> 2 pages — endTime not advancing"), the fetch exits non-zero and the snapshot is
-> unusable. Re-run with `--debug` to print, per request, the exact query params
-> and the returned `openTime` range:
+> **`ⓘ listed later than window`** on a pair just means it's newer than ~70 days
+> (e.g. a recent listing) — it's **usable-but-short**, not an error.
+>
+> **`✗ PAGINATION STALL`** (a page returns rows that add nothing — `startTime` not
+> advancing) exits non-zero; that snapshot is unusable. Re-run with `--debug` to
+> print, per request, the exact query params and returned `openTime` range:
 > ```powershell
 > node fetch-data.js --out .\data --top 20 --limit 20000 --tfs 5m,15m,1h --debug
 > ```
-> If the `[deep]` trace shows the **same** `openTime` window on every request, MEXC
-> is ignoring `endTime` on this endpoint for those symbols and deep backward paging
-> can't work — capture that trace so the cursor/interval semantics can be confirmed.
-> (A genuine short pair — "limited history — genuine end of series" — is fine, not a
-> stall.)
+> If the `[deep]` trace shows `startTime` advancing but the returned `openTime`
+> window **not** moving with it, capture that trace — the endpoint's time semantics
+> have changed again and the cursor needs another look.
 
 > Optional — to also enable the `1m` vs `5m` comparison in Step 3, add `1m` to the
 > timeframes: `--tfs 1m,5m,15m,1h`. Without it the run is **5m-only** (the compare

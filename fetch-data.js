@@ -7,9 +7,9 @@
 //   node fetch-data.js --out ./klines --pairs BTCUSDT --limit 5000 --tfs 5m,15m,1h
 //   MOCK=1 node fetch-data.js --out ./klines --pairs BTCUSDT   (offline, small)
 //
-// MEXC caps a single klines request at ~500 rows; this pages backward via
-// endTime (js/mexc.js getKlinesDeep) to reach an arbitrary --limit, stitching by
-// open time, de-duplicating the seam, and validating continuity.
+// MEXC caps a single klines request at ~500 rows; this pages FORWARD via
+// startTime (js/mexc.js getKlinesDeep) to reach an arbitrary --limit, stitching by
+// open time, de-duplicating overlaps, and validating continuity.
 //
 // Output per pair: <SYMBOL>.json = { symbol, "5m":[...], "15m":[...], "1h":[...] }
 // (parsed candles) — exactly what --data pooling loads. A manifest.json records
@@ -84,17 +84,21 @@ async function main() {
         continue;
       }
       fileObj[tf] = res.candles;
-      rec[tf] = { requested: want, received: res.received, pages: res.pages, gaps: res.gaps.length, stalled: !!res.stalled };
+      const earliest = res.candles.length ? res.candles[0].time : null;
+      const latest = res.candles.length ? res.candles[res.candles.length - 1].time : null;
+      rec[tf] = { requested: want, received: res.received, pages: res.pages, gaps: res.gaps.length, stalled: !!res.stalled, listedLate: !!res.listedLate, earliest, latest };
       // A STALL (pages returned data that merged to nothing) is an ERROR — the API
-      // stopped advancing, so the depth is bogus. Only call it "short history" when
-      // paging genuinely ran out of candles (no stall): a real limited-history pair.
+      // stopped advancing, so the depth is bogus. A short series that begins at a
+      // clean earliest boundary is a newly-LISTED pair ("listed later than window"),
+      // usable-but-short, NOT an error.
       if (res.stalled) {
         stalls++;
-        rec[tf].error = `pagination stall — the API stopped returning new candles after ${res.pages} page(s) (${res.received} unique). endTime is not advancing; deep history is unavailable via this path. Run with --debug to see per-request openTime.`;
-        console.error(`  ${sym} ${tf}: ✗ PAGINATION STALL — requested ${want}, only ${res.received} unique after ${res.pages} pages (endTime not advancing). Re-run with --debug.`);
+        rec[tf].error = `pagination stall — the API stopped returning new candles after ${res.pages} page(s) (${res.received} unique). startTime is not advancing; run with --debug to see per-request openTime.`;
+        console.error(`  ${sym} ${tf}: ✗ PAGINATION STALL — requested ${want}, only ${res.received} unique after ${res.pages} pages (startTime not advancing). Re-run with --debug.`);
       } else {
-        const short = res.received < want ? "  ⚠ short (limited history — genuine end of series)" : "";
-        console.log(`  ${sym} ${tf}: requested ${want}, received ${res.received} (${res.pages} pages, ${res.gaps.length} gaps)${short}`);
+        const label = res.listedLate ? "  ⓘ listed later than window (usable-but-short)"
+          : res.received < want ? "  ⚠ short (limited history)" : "";
+        console.log(`  ${sym} ${tf}: requested ${want}, received ${res.received} (${res.pages} pages, ${res.gaps.length} gaps)${label}`);
       }
     }
     fs.writeFileSync(path.join(outDir, `${sym}.json`), JSON.stringify(fileObj));
@@ -106,7 +110,7 @@ async function main() {
   console.log(`\nWrote ${pairs.length} pair files + manifest.json to ${outDir}`);
   if (stalls) {
     console.error(`\n✗ ${stalls} pagination stall(s) — this snapshot's deep history is NOT reliable. Do NOT validate on it.`);
-    console.error(`  Re-run with --debug to capture the exact per-request query params + returned openTime range, so the endTime/interval semantics can be confirmed.`);
+    console.error(`  Re-run with --debug to capture the exact per-request query params + returned openTime range, so the startTime/interval semantics can be confirmed.`);
     process.exitCode = 1;
   } else {
     console.log(`Run: node backtest.js --walk --data ${outDir} ${primaryTf}`);

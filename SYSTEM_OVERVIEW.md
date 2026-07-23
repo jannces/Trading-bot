@@ -318,18 +318,23 @@ Validation flags:
 ### Deep-history fetching (`fetch-data.js`)
 
 MEXC caps a single klines request at ~500 rows. `js/mexc.js getKlinesDeep` pages
-**backward via `endTime`** to assemble an arbitrary depth, stitching by open
-time (`stitchDeep`), de-duplicating the seam candle, validating continuity
-(records gaps), and honoring rate-limit backoff. The cursor steps to
-**`oldestOpenTime − 1ms`** each page (epoch-MS, `endTime` treated as an
-openTime-inclusive upper bound) and the loop continues **only while a page adds
-NEW candles**. If a page returns rows that all merge to nothing — the API ignored
-`endTime` and re-served the same batch — that is a **pagination stall**, surfaced
-as `stalled:true` and treated by `fetch-data.js` as an **error** (non-zero exit,
-`manifest.stalls`), distinct from a genuine short-history pair. `--debug` prints,
-per request, the exact query params and the returned `openTime` range so the
-semantics can be confirmed on a real run. `fetch-data.js` writes the pooled
-`--data` format:
+**forward via `startTime`** to assemble an arbitrary depth, stitching by open time
+(`stitchDeep`), de-duplicating overlaps, validating continuity (records gaps), and
+honoring rate-limit backoff. **Why forward:** a live `--debug` run showed MEXC's
+spot `/klines` time parameter is a **lower bound** (`endTime=…00:04:59.999`
+returned candles opening `00:05:00` onward, up to latest) — backward paging via
+`endTime` is impossible. So it starts at `windowStart = now − limit × intervalMs`
+and advances `startTime = newestOpenTime + 1ms` each page, continuing until a
+partial page / catching up to now. Failure modes are distinguished honestly:
+- **pagination stall** — a page returns rows that all merge to nothing
+  (`startTime` not advancing): `stalled:true`, an **error** (non-zero exit,
+  `manifest.stalls`).
+- **listed later than window** — a newly-listed pair whose history begins after
+  `windowStart`: `listedLate:true`, **usable-but-short** (included in the matrix;
+  thin per-pair stats are already guarded by the min-trade threshold), *not* an
+  error.
+`--debug` prints, per request, the exact query params and the returned `openTime`
+range. `fetch-data.js` writes the pooled `--data` format:
 
 ```bash
 node fetch-data.js --out ./klines --top 20 --limit 20000        # top-20 pairs, ~69 days of 5m
@@ -338,10 +343,13 @@ node fetch-data.js --out ./klines --pairs BTCUSDT,ETHUSDT --limit 20000
 
 Each `<SYMBOL>.json` carries all needed TFs (`5m` + `15m` bias + `1h` regime, HTF
 sized to the same span), BTCUSDT is always included (BTC-regime filter), and
-`manifest.json` records **requested vs received** (and gap counts) per pair/TF.
-The backtest's own real-provider fetches now page deep too (so `--limit` beyond
-500 isn't silently truncated), and `mexc.getKlines` warns once if a single
->500-row request comes back short.
+`manifest.json` records **requested vs received**, gap counts, `stalled`,
+`listedLate`, and the actual `earliest`/`latest` openTime per pair/TF.
+`verify-manifest.js` judges "short" against each pair's **own span** (its actual
+earliest candle → fetch time), so a newly-listed pair is *not* falsely flagged for
+history that never existed. The backtest's own real-provider fetches page forward
+the same way (so `--limit` beyond 500 isn't silently truncated), and
+`mexc.getKlines` warns once if a single >500-row request comes back short.
 
 The negative-expectancy report prints a suggested **`config.disabledSetups`**
 array (setup ids and `id@tf` combos with negative net expectancy).

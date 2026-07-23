@@ -12,17 +12,20 @@
 // ============================================================================
 import fs from "node:fs";
 import path from "node:path";
+import { intervalMinutes } from "./js/htf.js";
 
-const COMPLETE = 0.95; // received/requested below this is "short"
+const COMPLETE = 0.95; // received/expected below this (for the pair's OWN span) is "short"
 
 export function verifyManifest(dir) {
   const manPath = path.join(dir, "manifest.json");
   if (!fs.existsSync(manPath)) throw new Error(`no manifest.json in ${dir} — run fetch-data.js first`);
   const man = JSON.parse(fs.readFileSync(manPath, "utf8"));
+  const now = Date.parse(man.fetchedAt) || 0;
   const pairs = Object.keys(man.perPair || {});
   const issues = [];
-  const badPairs = new Set(); // pairs with at least one issue (any tf)
-  const provenance = []; // { sym, tf, count, from, to }
+  const notes = [];           // informational (e.g. listed-late) — NOT a bad pair
+  const badPairs = new Set(); // pairs with at least one real issue (any tf)
+  const provenance = [];      // { sym, tf, count, from, to }
 
   for (const sym of pairs) {
     const rec = man.perPair[sym];
@@ -30,22 +33,41 @@ export function verifyManifest(dir) {
     let obj = null;
     try { obj = JSON.parse(fs.readFileSync(path.join(dir, `${sym}.json`), "utf8")); } catch { /* missing */ }
     for (const [tf, r] of Object.entries(rec)) {
-      const ratio = r.requested ? r.received / r.requested : 0;
-      if (r.stalled || (r.error && /stall/i.test(r.error))) { issues.push(`${sym} ${tf}: PAGINATION STALL — ${r.error || "endTime not advancing"}`); badPairs.add(sym); }
-      else if (r.error) { issues.push(`${sym} ${tf}: ERROR ${r.error}`); badPairs.add(sym); }
-      else if (ratio < COMPLETE) { issues.push(`${sym} ${tf}: short — received ${r.received}/${r.requested} (${(ratio * 100).toFixed(1)}%)`); badPairs.add(sym); }
+      const arr = obj && Array.isArray(obj[tf]) ? obj[tf] : null;
+      const t0 = arr && arr.length ? (arr[0].time ?? (Array.isArray(arr[0]) ? arr[0][0] : null)) : null;
+      const t1 = arr && arr.length ? (arr[arr.length - 1].time ?? (Array.isArray(arr[arr.length - 1]) ? arr[arr.length - 1][0] : null)) : null;
+      if (arr && arr.length) provenance.push({ sym, tf, count: arr.length, from: t0, to: t1 });
+
+      if (r.stalled || (r.error && /stall/i.test(r.error))) { issues.push(`${sym} ${tf}: PAGINATION STALL — ${r.error || "startTime not advancing"}`); badPairs.add(sym); continue; }
+      if (r.error) { issues.push(`${sym} ${tf}: ERROR ${r.error}`); badPairs.add(sym); continue; }
       if (r.gaps > 0) { issues.push(`${sym} ${tf}: ${r.gaps} continuity gap(s)`); badPairs.add(sym); }
 
-      const arr = obj && Array.isArray(obj[tf]) ? obj[tf] : null;
-      if (arr && arr.length) {
-        const t0 = arr[0].time ?? (Array.isArray(arr[0]) ? arr[0][0] : null);
-        const t1 = arr[arr.length - 1].time ?? (Array.isArray(arr[arr.length - 1]) ? arr[arr.length - 1][0] : null);
-        provenance.push({ sym, tf, count: arr.length, from: t0, to: t1 });
+      // Expected count is measured against the pair's ACTUAL earliest candle, not
+      // the requested window — so a newly-listed pair isn't judged "short" for
+      // history that never existed. `expected` = candles from its earliest openTime
+      // up to the fetch time (capped by what was requested).
+      const intMs = intervalMinutes(tf) * 60000;
+      const earliest = r.earliest ?? t0;
+      const spanCandles = earliest && now ? Math.round((now - earliest) / intMs) + 1 : r.requested;
+      const expected = Math.min(r.requested || Infinity, spanCandles);
+      const ratio = expected > 0 && Number.isFinite(expected) ? r.received / expected : 1;
+
+      if (r.listedLate) {
+        // Usable-but-short: complete for the pair's existence, just fewer than the
+        // full window. Informational, not a bad pair — the min-trade threshold in
+        // analyze-results already guards any thin per-pair stat.
+        notes.push(`${sym} ${tf}: listed later than window — ${r.received} candles from ${isoShort(earliest)} (usable-but-short)`);
+      } else if (ratio < COMPLETE) {
+        // Short relative to its OWN span => genuine truncation / recent-end gap.
+        issues.push(`${sym} ${tf}: short — received ${r.received} vs ~${expected} expected for its span (${(ratio * 100).toFixed(1)}%)`);
+        badPairs.add(sym);
       }
     }
   }
-  return { man, pairs, issues, provenance, badPairs: [...badPairs], stalls: (man.stalls || 0) };
+  return { man, pairs, issues, notes, provenance, badPairs: [...badPairs], stalls: (man.stalls || 0) };
 }
+
+function isoShort(ms) { return Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 10) : "?"; }
 
 function fmtDate(ms) { return Number.isFinite(ms) ? new Date(ms).toISOString().replace("T", " ").slice(0, 16) + "Z" : "?"; }
 
@@ -53,7 +75,7 @@ function main() {
   const dir = process.argv[2] || "./data";
   let res;
   try { res = verifyManifest(dir); } catch (e) { console.error(e.message); process.exit(2); }
-  const { man, pairs, issues, provenance } = res;
+  const { man, pairs, issues, notes, provenance } = res;
 
   console.log(`Manifest: ${dir}/manifest.json`);
   console.log(`  source ${man.source} · fetched ${man.fetchedAt} · primary ${man.primaryTf} · target ${man.target} · TFs ${(man.tfs || []).join("/")}`);
@@ -67,13 +89,17 @@ function main() {
     console.log("  " + p.sym.padEnd(12) + p.tf.padEnd(5) + String(p.count).padEnd(9) + fmtDate(p.from).padEnd(19) + fmtDate(p.to));
   }
 
+  if (notes && notes.length) {
+    console.log(`\nⓘ ${notes.length} note(s) (usable, not errors):`);
+    for (const s of notes) console.log(`   - ${s}`);
+  }
   if (issues.length) {
     console.log(`\n⚠ ${issues.length} issue(s):`);
     for (const s of issues) console.log(`   - ${s}`);
-    console.log(`\nThese series are incomplete. You can still validate, but treat thin/gapped pairs with skepticism.`);
+    console.log(`\nThese series are genuinely incomplete (truncated/gapped/stalled). Treat those pairs with skepticism.`);
     process.exit(1);
   }
-  console.log(`\n✓ All ${provenance.length} series complete (≥ ${(COMPLETE * 100).toFixed(0)}% received, 0 gaps).`);
+  console.log(`\n✓ All ${provenance.length} series complete for their span (≥ ${(COMPLETE * 100).toFixed(0)}%, 0 gaps).`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) main();
