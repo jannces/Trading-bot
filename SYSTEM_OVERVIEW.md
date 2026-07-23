@@ -248,6 +248,18 @@ same half-off/BE/runner rules **and the shared cost model** (gross + net R).
 **HTF bias uses REAL higher-timeframe klines sliced by time**
 (`htf.htfSliceAtTime`) — identical to the live scanner, not resampled.
 
+**Windowed replay = live parity (`replay.windowBars`, one source of truth with
+`scanner.klineLimit`).** The live scanner only ever evaluates on the last
+`klineLimit` (200) candles it caches per pair/TF. So every replay path evaluates
+each bar on the **same trailing window** — `candles.slice(max(0,i+1-W), i+1)`,
+`W = CONFIG.replay.windowBars` — not a growing prefix. This keeps replayed signals
+faithful to what live would have seen, and makes **per-bar cost flat in history
+depth** (an 8k-candle series is no longer O(N²)): the setup's `triggerIndex`,
+window-relative, is translated back to a global index for the forward fill sim.
+The no-look-ahead guarantee is structural (the window ends at bar `i` and never
+exceeds `W`, asserted in the `--walk` precompute) and tested
+(`tests/replayperf.test.js` poison test).
+
 **Replay-perf split (`js/confluence.js`).** `evaluate()` is factored into
 `evaluateRaw()` (the expensive, params-**independent** scan — strategies,
 indicators, setup detection, HTF + regime bias, per-setup metrics; depends only

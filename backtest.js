@@ -171,12 +171,16 @@ function finish() {
 // --- Replay one series (optionally only bars in [from,to)) -----------------
 function replay(candles, sym, tf, htf, regime, from, to) {
   const warmup = CONFIG.backtest.warmup;
+  const W = CONFIG.replay.windowBars;
   from = from ?? warmup;
   to = to ?? candles.length - 2;
   const emitted = [];
   const seen = new Set();
   for (let i = Math.max(warmup, from); i < to; i++) {
-    const slice = candles.slice(0, i + 1);
+    // Live parity: evaluate on the SAME trailing window the scanner holds (the
+    // last W candles), not a growing prefix — and per-bar cost stays O(W).
+    const winStart = Math.max(0, i + 1 - W);
+    const slice = candles.slice(winStart, i + 1);
     const htfSlice = htfSliceAtTime(htf, candles[i].time);
     const regimeSlice = htfSliceAtTime(regime, candles[i].time);
     const dec = evaluate(slice, htfSlice, {
@@ -185,6 +189,7 @@ function replay(candles, sym, tf, htf, regime, from, to) {
     });
     if (dec.status !== "ACTIVE") continue;
     const p = dec.plan;
+    p.triggerIndex += winStart; // window-relative -> global (sim/dedup/posFrac)
     const key = `${p.id}:${p.triggerIndex}:${p.direction}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -206,22 +211,25 @@ function replay(candles, sym, tf, htf, regime, from, to) {
 // expireBars combo and every fold — turning an O(bars × combos × folds) scan
 // into an O(bars × distinctRecencies) one, with identical output.
 //
-// NO LOOK-AHEAD (structural, not just tested): bar i is handed exactly
-// candles.slice(0, i+1); the slice ENDS at candles[i], so evaluateRaw cannot
-// read any future bar. We assert the slice endpoint below so the guarantee
-// can't silently rot.
+// NO LOOK-AHEAD (structural, not just tested): bar i is handed exactly the
+// trailing window candles.slice(max(0,i+1-W), i+1); the window ENDS at candles[i]
+// (never past it) and never exceeds W, so evaluateRaw cannot read any future bar
+// and sees no more history than the live scanner. We assert both below so the
+// guarantee can't silently rot.
 function precomputeRaw(series, tf, recency) {
   const { candles, htf, regime, sym } = series;
   const warmup = CONFIG.backtest.warmup;
+  const W = CONFIG.replay.windowBars;
   const snapRec = CONFIG.gate.triggerRecencyBars;
   CONFIG.gate.triggerRecencyBars = recency;
   const rawByBar = new Array(candles.length);
   try {
     for (let i = warmup; i < candles.length; i++) {
-      const slice = candles.slice(0, i + 1);
-      // Structural look-ahead guard: the slice must end AT bar i, nothing later.
-      if (slice.length !== i + 1 || slice[slice.length - 1].time !== candles[i].time)
-        throw new Error(`look-ahead guard tripped at bar ${i}: slice does not end at candles[i]`);
+      const winStart = Math.max(0, i + 1 - W);
+      const slice = candles.slice(winStart, i + 1);
+      // Structural look-ahead guard: window must END at bar i and never exceed W.
+      if (slice[slice.length - 1].time !== candles[i].time || slice.length > W)
+        throw new Error(`look-ahead guard tripped at bar ${i}: window must end at candles[i] and be <= ${W}`);
       const htfSlice = htfSliceAtTime(htf, candles[i].time);
       const regimeSlice = htfSliceAtTime(regime, candles[i].time);
       rawByBar[i] = evaluateRaw(slice, htfSlice, {
@@ -242,6 +250,7 @@ function precomputeRaw(series, tf, recency) {
 function cheapReplay(series, rawByBar, tf, from, to) {
   const { candles, sym } = series;
   const warmup = CONFIG.backtest.warmup;
+  const W = CONFIG.replay.windowBars;
   from = from ?? warmup;
   to = to ?? candles.length - 2;
   const emitted = [];
@@ -250,6 +259,7 @@ function cheapReplay(series, rawByBar, tf, from, to) {
     const dec = gateDecision(rawByBar[i], { symbol: sym, interval: tf });
     if (dec.status !== "ACTIVE") continue;
     const p = dec.plan;
+    p.triggerIndex += Math.max(0, i + 1 - W); // window-relative -> global (matches precomputeRaw)
     const key = `${p.id}:${p.triggerIndex}:${p.direction}`;
     if (seen.has(key)) continue;
     seen.add(key);

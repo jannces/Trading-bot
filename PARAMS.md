@@ -21,6 +21,14 @@ Related (not re-tuned here, but worth noting on 5m):
   breakeven → runner model is TF-agnostic.
 - `backtest.maxBarsToFill` (10) — the backtest's own fill window; keep it ≥ the
   `expireBars` you settle on so live and backtest agree on "did it fill".
+- `replay.windowBars` (**200**) — the rolling window (in bars) every replay path
+  evaluates each bar on, mirroring `scanner.klineLimit` from one source of truth
+  (`WINDOW_BARS` in `config.js`). This is a **live-parity** knob, not a tuning
+  knob: the live scanner only ever sees the last `klineLimit` candles, so the
+  backtest evaluates on the same trailing window rather than a growing prefix.
+  Changing it changes BOTH live and backtest, and per-bar replay cost stays flat
+  regardless of how deep the fetched history is. Leave at 200 unless you also
+  intend to change how much history the live scanner holds.
 
 ## How to decide (don't trust the synthetic numbers)
 

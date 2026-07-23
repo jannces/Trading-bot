@@ -3,6 +3,15 @@
 // Plain data only (no DOM, no network). Shared by the server and the backtest.
 // ============================================================================
 
+// Rolling evaluation window (bars) — the SINGLE SOURCE OF TRUTH for how much
+// trailing history the gate ever sees. The live scanner caches this many candles
+// per pair/TF (scanner.klineLimit) and the backtest replays each bar on the same
+// trailing window (replay.windowBars), so a replayed signal is evaluated on the
+// SAME amount of history the live scanner would have. Change this ONE constant to
+// change both; it also keeps per-bar replay cost flat regardless of how deep the
+// fetched history is.
+const WINDOW_BARS = 200;
+
 export const CONFIG = {
   // -- Exchange / data ------------------------------------------------------
   exchange: {
@@ -23,7 +32,7 @@ export const CONFIG = {
     // When "1m" is not listed, its klines are never fetched (less API load).
     timeframes: ["5m"],
     require5mAgreeFor1m: true, // when 1m IS scanned, its signals need 5m agreement
-    klineLimit: 200, // candles held per pair/timeframe
+    klineLimit: WINDOW_BARS, // candles held per pair/timeframe (== replay.windowBars)
     // Exclude leveraged tokens (…3L/3S/5L/5S…) and stable-vs-stable pairs.
     excludeLeveraged: /(\d+[LS])USDT$/i,
     stableBases: ["USDC", "USDT", "TUSD", "BUSD", "DAI", "FDUSD", "USDD", "USDP", "EURS"],
@@ -145,6 +154,14 @@ export const CONFIG = {
 
   // HTF used by the standalone backtest per timeframe (scanner uses config.htf).
   htfMap: { "1m": "15m", "5m": "15m", "15m": "1h", "1h": "4h", "4h": "1d", "1d": "1w" },
+
+  // -- Backtest replay window (live parity) ---------------------------------
+  // Every replay path (--scan/--matrix/--compare/--walk) evaluates each bar on
+  // ONLY the last windowBars candles — the same trailing window the live scanner
+  // holds (scanner.klineLimit). Mirrors WINDOW_BARS (one source of truth), so
+  // backtest and live evaluate identical history depth and per-bar cost stays
+  // flat no matter how deep the fetched series is.
+  replay: { windowBars: WINDOW_BARS },
 
   backtest: {
     maxBarsToFill: 10,
