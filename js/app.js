@@ -93,6 +93,7 @@ function card(item) {
   const age = item.age != null ? `${item.age} bars` : item.kind === "forming" ? "forming" : "—";
   const cap = item.exposureCapped ? '<span class="badge b-exp" title="Beyond the same-direction exposure cap">EXP-CAP</span>' : "";
   const regime = item.regimeDowngraded ? '<span class="badge b-exp" title="Slower HTF regime opposes — tier downgraded">REGIME↓</span>' : "";
+  const offSes = item.offSession ? '<span class="badge b-exp" title="Triggered outside the configured session hours — tier downgraded">OFF-SESSION</span>' : "";
   const missing = item.forming && item.missing ? `<div class="card-missing">Waiting: ${esc(item.missing.join(", "))}</div>` : "";
   d.innerHTML = `
     <div class="card-top">
@@ -113,7 +114,7 @@ function card(item) {
     ${missing}
     <div class="card-foot">
       <span class="tier tier-${(item.tier || "B").replace("+", "plus")}">${item.tier || "B"}</span>
-      ${badge}${cap}${regime}
+      ${badge}${cap}${regime}${offSes}
       <span class="age">${age}</span>
       <span class="live" data-sym="${esc(item.symbol)}">${item.price != null ? fmtP(item.price) : ""}</span>
     </div>`;

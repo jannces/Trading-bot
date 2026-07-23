@@ -184,6 +184,7 @@ export class Scanner {
       stop: plan.stop, tp1: plan.tp1, tp2: plan.tp2,
       exposureCapped, btcBias, hourUTC,
       regimeBias: plan.regimeBias ?? "NEUTRAL", regimeDowngraded: !!plan.regimeDowngraded,
+      offSession: !!plan.offSession,
       createdAt: plan.triggerTime, status: "open", realizedR: null, grossR: null, closedAt: null,
     });
     this.onNewSignal(sig);
@@ -234,6 +235,8 @@ export class Scanner {
       bySetup: group(closed, (r) => r.setupName || r.setup),
       byBtcRegime: group(closed, (r) => r.btcBias || "NEUTRAL"), // BTC bias at signal time
       byHour: group(closed, (r) => String(r.hourUTC ?? new Date(r.createdAt).getUTCHours())), // hour-of-day (UTC)
+      bySession: group(closed, (r) => (r.offSession ? "off-session" : "in-session")), // session-filter effect
+
       total: this.ledger.length,
       open: this.ledger.filter((r) => r.status === "open").length,
     };

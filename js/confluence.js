@@ -162,12 +162,20 @@ function buildPlan(evald, htf, htfLabel, meta, results, candles, isForming, rctx
   const regimeDowngraded = regimeCounter && rctx && rctx.regimeMode === "downgrade";
   if (regimeDowngraded) tier = downgradeTier(tier);
 
+  // Optional session filter: signals triggered outside allowedUtcHours are
+  // downgraded and flagged (never dropped), so the ledger can measure the effect.
+  const sf = CONFIG.sessionFilter;
+  const sessionHour = new Date(s.triggerTime).getUTCHours();
+  const offSession = !!(sf && sf.enabled && Array.isArray(sf.allowedUtcHours) && !sf.allowedUtcHours.includes(sessionHour));
+  if (offSession) tier = downgradeTier(tier);
+
   const confluences = [];
   for (const h of s.hints) confluences.push(`${tfl} ${h}`.trim());
   confluences.push(htf.reason.replace(/^HTF/, htfLabel));
   if (rctx && rctx.regime.bias !== "NEUTRAL") {
     confluences.push(`${rctx.regimeLabel} regime ${rctx.regime.bias.toLowerCase()}${regimeDowngraded ? " — tier downgraded" : ""}`);
   }
+  if (offSession) confluences.push(`off-session (${sessionHour}:00 UTC) — tier downgraded`);
   for (const c of contributors.slice(1)) confluences.push(`${tfl} ${c.name} · ${c.score}`.trim());
 
   return {
@@ -197,6 +205,8 @@ function buildPlan(evald, htf, htfLabel, meta, results, candles, isForming, rctx
     regimeBias,
     regimeCounter,
     regimeDowngraded,
+    offSession,
+    sessionHour,
     createdAt: Date.now(),
   };
 }

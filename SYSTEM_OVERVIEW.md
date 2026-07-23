@@ -115,6 +115,11 @@ a sub-second/tick system.
      **`exposureCapped`** (an "EXP-CAP" badge in the feed and a field in the ledger).
    - Each ledger record stores the **BTC bias** and **hour-of-day (UTC)** at lock;
      the summary adds `byBtcRegime` and `byHour` breakdowns.
+   - **Optional session filter (Task 5):** `config.sessionFilter` (off by
+     default). When enabled, signals triggered outside `allowedUtcHours` are
+     tier-downgraded and flagged `offSession` (never dropped); the ledger's
+     `bySession` (in-session vs off-session) breakdown lets you measure whether
+     the filter would have helped before trusting it.
 
 ---
 
@@ -210,6 +215,7 @@ count, HTF), **named contributors** with individual scores, a plain-language
 | `regime.btcFilter` | `"off"` \| `"suppress"` \| `"downgrade"` — how to treat alts counter to BTC bias |
 | `regime.btcSymbol` / `regime.btcTimeframe` | which symbol/timeframe defines the market regime |
 | `exposure.maxSameDirection` | ACTIVE same-direction signals allowed before new ones are flagged `exposureCapped` |
+| `sessionFilter.enabled` / `sessionFilter.allowedUtcHours` | when enabled, signals outside these UTC hours are downgraded + flagged `offSession` (never dropped); ledger `bySession` measures the effect (Task 5) |
 | `disabledSetups` | array of setup ids / `id@tf` combos the gate skips (Phase 2) |
 | `backtest.minTradesForVerdict` | min trades on a TF before `--compare` issues a keep/disable verdict (default 50) (Task 4) |
 | `timing.incrementalKlineLimit` / `timing.candleCloseGraceMs` | incremental fetch size / post-close scan grace (Phase 3) |

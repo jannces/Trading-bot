@@ -124,6 +124,16 @@ export const CONFIG = {
     maxSameDirection: 5, // beyond this many ACTIVE same-direction signals, new ones are flagged
   },
 
+  // -- Optional session (hour-of-day) filter --------------------------------
+  // When enabled, signals triggered OUTSIDE allowedUtcHours are DOWNGRADED and
+  // flagged offSession (never dropped) — so the ledger can measure whether
+  // restricting to these hours would have helped before you trust it. Disabled
+  // by default (no behavior change). The default window is illustrative.
+  sessionFilter: {
+    enabled: false,
+    allowedUtcHours: [12, 13, 14, 15, 16, 17, 18, 19, 20], // UTC hours "in session"
+  },
+
   risk: { atrPeriod: 14 },
 
   indicators: {
