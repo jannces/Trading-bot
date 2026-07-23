@@ -20,8 +20,11 @@
 import { CONFIG } from "./js/config.js";
 import { evaluate } from "./js/confluence.js";
 import { computeR } from "./js/costs.js";
+import fs from "node:fs";
+import path from "node:path";
 import { htfSliceAtTime, intervalMinutes } from "./js/htf.js";
 import { compareVerdict } from "./js/verdict.js";
+import { computeFolds, foldSelectable, sizingWarning } from "./js/walk.js";
 import * as mexc from "./js/mexc.js";
 import { MockProvider } from "./js/mockprovider.js";
 
@@ -34,9 +37,11 @@ async function main() {
   const matrix = args.includes("--matrix");
   const walk = args.includes("--walk");
   const compare = args.includes("--compare");
+  const dataIdx = args.indexOf("--data");
+  const dataDir = dataIdx !== -1 ? args[dataIdx + 1] : null;
   const splitIdx = args.indexOf("--split");
   const doSplit = splitIdx !== -1;
-  const pos = args.filter((a) => !a.startsWith("--"));
+  const pos = args.filter((a, i) => !a.startsWith("--") && !(dataIdx !== -1 && i === dataIdx + 1));
   const nums = pos.filter((a) => /^\d+$/.test(a));
   const words = pos.filter((a) => !/^\d+$/.test(a));
   const floats = pos.filter((a) => /^\d*\.\d+$/.test(a));
@@ -46,6 +51,7 @@ async function main() {
   if (compare) { symbolArg = "BTCUSDT"; tf = words[1] || "5m"; } // words are the two TFs
   else if (scan) { tf = words[0] || "5m"; }
   else if (demo) { symbolArg = "BTCUSDT"; tf = words[0] || "5m"; }
+  else if (walk && dataDir) { symbolArg = "POOL"; tf = words[0] || "5m"; } // lone word is the TF
   else { symbolArg = (words[0] || "BTCUSDT").toUpperCase(); tf = words[1] || "5m"; }
 
   const provider = demo ? new MockProvider({ full: true }) : { getKlines: mexc.getKlines, get24hr: mexc.get24hr };
@@ -62,7 +68,11 @@ async function main() {
     symbols = [demo ? "BTCUSDT" : symbolArg];
   }
 
-  console.log(`\nBacktest — ${scan ? `SCAN top-${symbols.length}` : symbols[0]} · ${timeframes.join("/")} · ${limit} candles · HTF ${htfTf}+${regimeTf} (real) · ${demo ? "synthetic demo" : "MEXC"}`);
+  if (!(walk && dataDir)) {
+    console.log(`\nBacktest — ${scan ? `SCAN top-${symbols.length}` : symbols[0]} · ${timeframes.join("/")} · ${limit} candles · HTF ${htfTf}+${regimeTf} (real) · ${demo ? "synthetic demo" : "MEXC"}`);
+  } else {
+    console.log(`\nBacktest — pooled walk-forward from --data ${dataDir} · ${tf} · HTF ${htfTf}+${regimeTf}`);
+  }
   console.log(`Gate: setup + >=${CONFIG.gate.minAgree}/10 aligned, no veto, HTF not counter, R:R>=${CONFIG.gate.minRR}, stop<=cap`);
   const c = CONFIG.costs;
   console.log(`Costs: fees ${(c.fees.makerPct * 100).toFixed(3)}/${(c.fees.takerPct * 100).toFixed(3)}%, slip ${(c.slippage.entryPct * 100).toFixed(3)}/${(c.slippage.stopPct * 100).toFixed(3)}%, spread ${(c.spreadPct * 100).toFixed(3)}% -> gross & net R\n`);
@@ -88,6 +98,24 @@ async function main() {
     return finish();
   }
 
+  // --- Walk-forward: single pair, or multiple pooled pairs with --data <dir> --
+  if (walk) {
+    let seriesList;
+    if (dataDir) {
+      seriesList = loadDataDir(dataDir, tf, htfTf, regimeTf);
+      if (!seriesList.length) { console.log(`No usable series in --data ${dataDir} (need <SYMBOL>.json with a "${tf}" array).`); return finish(); }
+    } else {
+      const sym = symbols[0];
+      const htf = await fetchHtf(sym, htfTf);
+      const regime = await fetchHtf(sym, regimeTf);
+      let candles = [];
+      try { candles = await provider.getKlines(sym, tf, limit); } catch (e) { console.log(`fetch failed: ${e.message}`); return finish(); }
+      seriesList = [{ sym, candles, htf, regime }];
+    }
+    runWalkForward(seriesList, tf);
+    return finish();
+  }
+
   const all = [];
   for (const sym of symbols) {
     const htf = await fetchHtf(sym, htfTf);
@@ -97,12 +125,10 @@ async function main() {
       try { candles = await provider.getKlines(sym, t, limit); }
       catch (e) { if (!scan) throw e; console.error(`  ${sym} ${t}: fetch failed (${e.message})`); continue; }
       if (!candles || candles.length < CONFIG.backtest.warmup + 30) continue;
-      if (walk && !scan && !matrix) { await runWalkForward(candles, sym, t, htf, regime); return finish(); }
       for (const tr of replay(candles, sym, t, htf, regime)) all.push(tr);
       if (!demo) await sleep(CONFIG.timing.klineStaggerMs);
     }
   }
-  if (walk) { console.log("--walk runs on a single symbol/timeframe (omit --scan/--matrix)."); return finish(); }
 
   if (all.length === 0) { console.log("No filled trades on this sample."); return finish(); }
 
@@ -162,7 +188,9 @@ function simulateTrade(candles, plan) {
   const entry = plan.entryPrice;
   const R = Math.abs(entry - plan.stop);
   if (R <= 0) return { filled: false };
-  const maxFill = CONFIG.backtest.maxBarsToFill;
+  // Honor the live expiry window (scalper.expireBars) so the --walk grid over
+  // expireBars is meaningful; fall back to maxBarsToFill.
+  const maxFill = CONFIG.scalper.expireBars[plan.interval] ?? CONFIG.backtest.maxBarsToFill;
   let fillIndex = -1;
   for (let j = plan.triggerIndex + 1; j < candles.length && j <= plan.triggerIndex + maxFill; j++) {
     const cc = candles[j];
@@ -294,71 +322,134 @@ async function runCompare(symbols, cmpTfs, provider, fetchHtf, htfTf, regimeTf, 
   console.log("\nVerdicts use net expectancy; a TF needs >= min trades or its side is 'insufficient'. Not financial advice.");
 }
 
-// --- Walk-forward ----------------------------------------------------------
-async function runWalkForward(candles, sym, tf, htf, regime) {
-  const folds = 3;
+// --- Walk-forward (single pair, or multiple pooled pairs) -------------------
+// Folds are derived from the candles ACTUALLY available and cover the full
+// usable range (fold math in js/walk.js). Pooled pairs share folds by TIMESTAMP.
+function runWalkForward(seriesList, tf) {
   const warmup = CONFIG.backtest.warmup;
-  const usable = candles.length - warmup;
-  const win = Math.floor(usable / (folds + 1));
-  if (win < 40) { console.log("Not enough candles for walk-forward (need more)."); return; }
+  const W = CONFIG.backtest.walk;
+  const pairs = seriesList.length;
+  const ref = seriesList.reduce((a, b) => (b.candles.length > a.candles.length ? b : a));
+  const total = ref.candles.length;
+  const fold = computeFolds(total, warmup, W.trainBars, W.testBars);
 
+  // Header — make truncation visible.
+  console.log(`WALK-FORWARD — ${pairs === 1 ? seriesList[0].sym : `${pairs} pairs pooled`} ${tf}`);
+  console.log(`  candles: ${total}${pairs > 1 ? " (ref)" : ""} · warm-up: ${warmup} · usable: ${fold.usable} · train ${W.trainBars}/test ${W.testBars} bars · folds ${fold.folds.length} · coverage ${fold.coveragePct.toFixed(0)}%`);
+  if (pairs > 1) console.log(`  pooled candles across ${pairs} pairs: ${seriesList.reduce((s, x) => s + x.candles.length, 0)}`);
+
+  if (fold.insufficient) {
+    console.log(`\n  INSUFFICIENT DATA: ${fold.reason}.`);
+    console.log(`  Fetch more candles (per-request limits apply) or pool pairs with --data <dir>.`);
+    return;
+  }
+
+  const tAt = (idx) => (idx >= total ? ref.candles[total - 1].time + 1 : ref.candles[idx].time);
+
+  // Sizing sanity from the OBSERVED frequency (full-range pooled replay).
+  const fullTrades = poolReplay(seriesList, tf, tAt(warmup), tAt(total));
+  const tradesPerBar = fold.usable > 0 ? fullTrades.length / fold.usable : 0;
+  const warn = sizingWarning(tradesPerBar, W.testBars, warmup, W.trainBars, W.minTradesPerFoldWarn, pairs);
+  if (warn) {
+    console.log(`\n  ⚠ SIZING: ~${warn.expected.toFixed(1)} trades expected per ${W.testBars}-bar test window (< ${W.minTradesPerFoldWarn}).`);
+    console.log(`     To reach ${W.minTradesPerFoldWarn}/fold: ~${fmtN(warn.neededCandles)} candles per pair, OR pool ~${fmtN(warn.neededPairs)} pairs via --data <dir>.`);
+  }
+
+  // Grid.
   const baseExpire = CONFIG.scalper.expireBars[tf] ?? 10;
   const baseRecency = CONFIG.gate.triggerRecencyBars;
   const baseCap = CONFIG.scalper.stopCapPct[tf];
-  const tighterExpire = Math.max(4, Math.round(baseExpire * 0.6));
-  const tighterRecency = Math.max(2, baseRecency - 1);
-
-  // Grid: gate.minAgree × gate.minRR × scalper.stopCapPct × scalper.expireBars ×
-  // gate.triggerRecencyBars (kept modest so runtime stays reasonable).
   const grid = [];
   for (const minAgree of [6, 7])
-    for (const capScale of [0.75, 1.0, 1.5]) // tighter / base / looser stop cap
-      for (const expireBars of [baseExpire, tighterExpire])
-        for (const recency of [baseRecency, tighterRecency])
+    for (const capScale of [0.75, 1.0, 1.5])
+      for (const expireBars of [baseExpire, Math.max(4, Math.round(baseExpire * 0.6))])
+        for (const recency of [baseRecency, Math.max(2, baseRecency - 1)])
           grid.push({ minAgree, minRR: CONFIG.gate.minRR, capScale, expireBars, recency });
-
-  const snap = {
-    minAgree: CONFIG.gate.minAgree, minRR: CONFIG.gate.minRR, cap: baseCap,
-    expire: baseExpire, recency: baseRecency,
-  };
+  const snap = { minAgree: CONFIG.gate.minAgree, minRR: CONFIG.gate.minRR, cap: baseCap, expire: baseExpire, recency: baseRecency };
   const applyG = (g) => {
     CONFIG.gate.minAgree = g.minAgree; CONFIG.gate.minRR = g.minRR;
     CONFIG.scalper.stopCapPct[tf] = baseCap * g.capScale;
     CONFIG.scalper.expireBars[tf] = g.expireBars;
     CONFIG.gate.triggerRecencyBars = g.recency;
   };
-  const oosAll = [];
-  console.log(`WALK-FORWARD — ${sym} ${tf} · ${folds} folds · grid ${grid.length} combos (minAgree×stopCap×expireBars×recency)\n`);
-  console.log("  fold  train[from:to]  chosen(minAgree,capScale,expire,recency)  trainNet  testNet(OOS)  nTest");
-  console.log("  " + "-".repeat(88));
 
-  for (let f = 0; f < folds; f++) {
-    const trainFrom = warmup + f * win, trainTo = trainFrom + win;
-    const testFrom = trainTo, testTo = Math.min(candles.length - 2, testFrom + win);
-    // Grid search on the train window.
+  console.log(`\n  grid ${grid.length} combos (minAgree×stopCap×expireBars×recency)`);
+  console.log("  fold  chosen(minAgree,capScale,expire,recency)  trainN  trainNet  testN  testNet(OOS)  note");
+  console.log("  " + "-".repeat(94));
+
+  const oosAll = [];
+  let included = 0;
+  for (const F of fold.folds) {
+    const tTrainFrom = tAt(F.trainFrom), tTrainTo = tAt(F.trainTo);
+    const tTestFrom = tAt(F.testFrom), tTestTo = tAt(F.testTo);
+    // Grid search on the (pooled) train window.
     let best = null;
+    let maxTrainN = 0;
     for (const g of grid) {
       applyG(g);
-      const tr = replay(candles, sym, tf, htf, regime, trainFrom, trainTo);
+      const tr = poolReplay(seriesList, tf, tTrainFrom, tTrainTo);
+      maxTrainN = Math.max(maxTrainN, tr.length);
       const exp = mean(tr.map((t) => t.netR));
-      const score = tr.length >= 3 ? exp : -Infinity; // ignore too-thin combos
+      const score = tr.length >= W.minTrainTrades ? exp : -Infinity;
       if (!best || score > best.score) best = { g, score, exp, n: tr.length };
     }
-    // Evaluate chosen params out-of-sample.
-    applyG(best.g);
-    const oos = replay(candles, sym, tf, htf, regime, testFrom, testTo).map((t) => ({ ...t, fold: f }));
-    for (const t of oos) oosAll.push(t);
-    console.log("  " + pad(f, 6) + pad(`${trainFrom}:${trainTo}`, 16) + pad(`(${best.g.minAgree},${best.g.capScale},${best.g.expireBars},${best.g.recency})`, 42) + pad(fmtR(best.exp), 10) + pad(fmtR(mean(oos.map((t) => t.netR))), 13) + oos.length);
+    const selectionMade = best.score > -Infinity;
+    const trainN = selectionMade ? best.n : maxTrainN; // real best-effort count for reporting
+    // OOS trades under the chosen params (only if a real selection was made).
+    let testTrades = [];
+    if (selectionMade) { applyG(best.g); testTrades = poolReplay(seriesList, tf, tTestFrom, tTestTo); }
+    const gate = foldSelectable(trainN, testTrades.length, W.minTrainTrades, W.minTestTrades);
+
+    if (!gate.selectable) {
+      console.log("  " + pad(F.index, 6) + pad("— no selection —", 44) + pad(trainN, 8) + pad("—", 10) + pad(0, 7) + pad("—", 14) + gate.reason);
+      continue;
+    }
+    if (gate.includeTest) { for (const t of testTrades) oosAll.push({ ...t, fold: F.index }); included++; }
+    console.log("  " + pad(F.index, 6) + pad(`(${best.g.minAgree},${best.g.capScale},${best.g.expireBars},${best.g.recency})`, 44) + pad(trainN, 8) + pad(fmtR(best.exp), 10) + pad(testTrades.length, 7) + pad(fmtR(mean(testTrades.map((t) => t.netR))), 14) + (gate.includeTest ? "" : gate.reason));
   }
   // Restore config.
   CONFIG.gate.minAgree = snap.minAgree; CONFIG.gate.minRR = snap.minRR;
   CONFIG.scalper.stopCapPct[tf] = snap.cap; CONFIG.scalper.expireBars[tf] = snap.expire;
   CONFIG.gate.triggerRecencyBars = snap.recency;
 
-  console.log("\nAGGREGATE OUT-OF-SAMPLE (chosen params per fold):");
-  if (oosAll.length) reportGroups({ OOS: oosAll }); else console.log("  no OOS trades.");
+  console.log(`\nAGGREGATE OUT-OF-SAMPLE (${included}/${fold.folds.length} folds contributed):`);
+  if (oosAll.length) reportGroups({ OOS: oosAll }); else { console.log("  no OOS trades from qualifying folds."); return; }
   const e = mean(oosAll.map((t) => t.netR));
   console.log(`  -> walk-forward OOS net expectancy ${fmtR(e)} over ${oosAll.length} trades ${e > 0 ? "(positive)" : "(non-positive — be skeptical)"}`);
+}
+
+/** Pool replay across series over a TIME range [tFrom, tTo). */
+function poolReplay(seriesList, tf, tFrom, tTo) {
+  const out = [];
+  for (const s of seriesList) {
+    const from = idxAtTime(s.candles, tFrom);
+    const to = idxAtTime(s.candles, tTo);
+    if (to > from) for (const tr of replay(s.candles, s.sym, tf, s.htf, s.regime, from, to)) out.push(tr);
+  }
+  return out;
+}
+/** First index whose candle time is >= t (binary search; candles ascending). */
+function idxAtTime(candles, t) {
+  let lo = 0, hi = candles.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (candles[m].time < t) lo = m + 1; else hi = m; }
+  return lo;
+}
+/** Load pooled series from a --data dir: <SYMBOL>.json with { tf: candles[] }. */
+function loadDataDir(dir, tf, htfTf, regimeTf) {
+  let files = [];
+  try { files = fs.readdirSync(dir).filter((f) => f.endsWith(".json") && f !== "manifest.json"); } catch { return []; }
+  const toCandles = (arr) => (Array.isArray(arr) && arr.length && Array.isArray(arr[0]) ? mexc.parseKlines(arr) : Array.isArray(arr) ? arr : []);
+  const series = [];
+  for (const file of files) {
+    let obj;
+    try { obj = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")); } catch { continue; }
+    const sym = obj.symbol || file.replace(/\.json$/i, "");
+    const candles = toCandles(obj[tf]);
+    if (candles.length >= CONFIG.backtest.warmup + 5) {
+      series.push({ sym, candles, htf: toCandles(obj[htfTf]), regime: toCandles(obj[regimeTf]) });
+    }
+  }
+  return series;
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -375,4 +466,5 @@ function pad(s, w) { return String(s).padEnd(w); }
 function fmtPct(v) { return Number.isFinite(v) ? v.toFixed(0) + "%" : "—"; }
 function fmtR(v) { return Number.isFinite(v) ? (v >= 0 ? "+" : "") + v.toFixed(2) : "—"; }
 function fmtPF(v) { return v === Infinity ? "∞" : Number.isFinite(v) ? v.toFixed(2) : "—"; }
+function fmtN(v) { return Number.isFinite(v) ? String(v) : "∞"; }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }

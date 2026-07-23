@@ -152,6 +152,15 @@ export const CONFIG = {
     // `--compare` needs at least this many trades on a TF before it will issue a
     // keep/disable verdict for a setup; below it the verdict is "insufficient data".
     minTradesForVerdict: 50,
+    // Walk-forward: fixed window sizes (bars). Fold COUNT is derived from the
+    // candles actually available (after warm-up) so folds cover the full range.
+    walk: {
+      trainBars: 200, // train window per fold
+      testBars: 100, // out-of-sample window per fold
+      minTrainTrades: 10, // below this, a fold makes "no selection" (excluded)
+      minTestTrades: 10, // below this, a fold's OOS is excluded from the aggregate
+      minTradesPerFoldWarn: 20, // sizing sanity: warn if expected trades/fold is below this
+    },
   },
 
   notifications: { minTierForAlert: "A" }, // browser alert on A/A+

@@ -218,6 +218,9 @@ count, HTF), **named contributors** with individual scores, a plain-language
 | `sessionFilter.enabled` / `sessionFilter.allowedUtcHours` | when enabled, signals outside these UTC hours are downgraded + flagged `offSession` (never dropped); ledger `bySession` measures the effect (Task 5) |
 | `disabledSetups` | array of setup ids / `id@tf` combos the gate skips (Phase 2) |
 | `backtest.minTradesForVerdict` | min trades on a TF before `--compare` issues a keep/disable verdict (default 50) (Task 4) |
+| `backtest.walk.trainBars` / `testBars` | walk-forward window sizes; fold count is derived from available candles to cover the full range |
+| `backtest.walk.minTrainTrades` / `minTestTrades` | per-fold gates; below them a fold makes "no selection" / is excluded from the OOS aggregate |
+| `backtest.walk.minTradesPerFoldWarn` | expected-trades/fold threshold that triggers the up-front sizing warning |
 | `timing.incrementalKlineLimit` / `timing.candleCloseGraceMs` | incremental fetch size / post-close scan grace (Phase 3) |
 
 ---
@@ -263,7 +266,20 @@ Validation flags:
 - `--walk` — **walk-forward**: grid-searches {`gate.minAgree`,
   `scalper.stopCapPct`, `scalper.expireBars`, `gate.triggerRecencyBars`} on
   rolling train windows, applies the winner to the next (out-of-sample) window,
-  and aggregates OOS results. See **PARAMS.md** for the 5m default review.
+  and aggregates OOS results. **Fold count/coverage are derived from the candles
+  actually available** (`js/walk.js`, `backtest.walk.{trainBars,testBars}`) and
+  the header prints total candles / warm-up / **coverage %** so a truncated fetch
+  is visible. Folds with < `walk.minTrainTrades` train trades report
+  "no selection" and are excluded; OOS with < `walk.minTestTrades` is dropped
+  from the aggregate. A **sizing warning** fires up-front when expected
+  trades/fold is below `walk.minTradesPerFoldWarn`, suggesting more candles or a
+  pooled `--data` run. See **PARAMS.md**.
+- `--walk --data <dir> TF` — **pooled multi-pair** walk-forward. Loads
+  `<SYMBOL>.json` files (`{ "5m": [...], "15m": [...], "1h": [...] }`, raw MEXC
+  klines or parsed candles), shares folds **by timestamp**, and pools every
+  pair's trades per fold — the way to reach meaningful per-fold trade counts that
+  a single 5m pair never can. (Replay is O(n²) in candles, so keep pools/candle
+  counts modest; a large 50-pair run is a long analysis job.)
 
 The negative-expectancy report prints a suggested **`config.disabledSetups`**
 array (setup ids and `id@tf` combos with negative net expectancy).

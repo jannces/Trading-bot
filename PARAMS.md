@@ -25,11 +25,21 @@ Related (not re-tuned here, but worth noting on 5m):
 ## How to decide (don't trust the synthetic numbers)
 
 ```bash
-# Walk-forward now grids minAgree × stopCap × expireBars × triggerRecencyBars
-node backtest.js --walk 5m 1500
-# And compare in/out-of-sample stability for a fixed config:
+# Walk-forward grids minAgree × stopCap × expireBars × triggerRecencyBars.
+# Fold count/coverage now derive from the candles actually returned, and the
+# header prints coverage % so a truncated fetch is obvious.
+node backtest.js --walk BTCUSDT 5m 1500
+
+# A single 5m pair rarely reaches meaningful per-fold trade counts (~1 signal/
+# day/pair). Pool many pairs so folds share trades by timestamp:
+node backtest.js --walk --data ./klines 5m     # ./klines/<SYMBOL>.json with 5m/15m/1h arrays
+
+# In/out-of-sample stability for a fixed config:
 node backtest.js BTCUSDT 5m 1500 --split
 ```
+
+If the walk header shows low coverage or the sizing warning fires, that is the
+signal to pool more pairs (`--data`) rather than trust a thin single-pair run.
 
 The walk-forward's per-fold "chosen(...)" column shows which
 `(minAgree, capScale, expire, recency)` won each training window and how it did
