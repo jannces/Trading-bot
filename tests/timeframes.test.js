@@ -37,7 +37,8 @@ console.log("5m-only config");
 {
   const tfs = await scanOnce(["5m"]);
   ok(tfs.has("5m"), "fetches 5m");
-  ok(tfs.has(CONFIG.scanner.htfTimeframe), `fetches HTF bias TF (${CONFIG.scanner.htfTimeframe})`);
+  ok(tfs.has(CONFIG.htf.biasTf), `fetches HTF bias TF (${CONFIG.htf.biasTf})`);
+  ok(tfs.has(CONFIG.htf.regimeTf), `fetches regime TF (${CONFIG.htf.regimeTf})`);
   ok(!tfs.has("1m"), "does NOT fetch 1m when it isn't configured");
 }
 

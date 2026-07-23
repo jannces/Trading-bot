@@ -183,7 +183,7 @@ async function main() {
   setInterval(refreshTopSafe, CONFIG.scanner.listRefreshMs);
   server.listen(CONFIG.server.port, () => {
     console.log(`\nScalper scanner on http://localhost:${CONFIG.server.port}  ${MOCK ? "(MOCK data)" : "(live MEXC)"}`);
-    console.log(`Scanning top ${scanner.symbols().length} pairs on ${CONFIG.scanner.timeframes.join("/")} · HTF ${CONFIG.scanner.htfTimeframe}`);
+    console.log(`Scanning top ${scanner.symbols().length} pairs on ${CONFIG.scanner.timeframes.join("/")} · HTF ${CONFIG.htf.biasTf}`);
   });
   startScanning();
   priceLoop();

@@ -46,7 +46,8 @@ async function main() {
   else { symbolArg = (words[0] || "BTCUSDT").toUpperCase(); tf = words[1] || "5m"; }
 
   const provider = demo ? new MockProvider({ full: true }) : { getKlines: mexc.getKlines, get24hr: mexc.get24hr };
-  const htfTf = CONFIG.scanner.htfTimeframe;
+  const htfTf = CONFIG.htf.biasTf;
+  const regimeTf = CONFIG.htf.regimeTf;
   const timeframes = matrix ? CONFIG.scanner.timeframes : [tf];
 
   // Resolve the symbol universe.
@@ -58,32 +59,37 @@ async function main() {
     symbols = [demo ? "BTCUSDT" : symbolArg];
   }
 
-  console.log(`\nBacktest — ${scan ? `SCAN top-${symbols.length}` : symbols[0]} · ${timeframes.join("/")} · ${limit} candles · HTF ${htfTf} (real) · ${demo ? "synthetic demo" : "MEXC"}`);
+  console.log(`\nBacktest — ${scan ? `SCAN top-${symbols.length}` : symbols[0]} · ${timeframes.join("/")} · ${limit} candles · HTF ${htfTf}+${regimeTf} (real) · ${demo ? "synthetic demo" : "MEXC"}`);
   console.log(`Gate: setup + >=${CONFIG.gate.minAgree}/10 aligned, no veto, HTF not counter, R:R>=${CONFIG.gate.minRR}, stop<=cap`);
   const c = CONFIG.costs;
   console.log(`Costs: fees ${(c.fees.makerPct * 100).toFixed(3)}/${(c.fees.takerPct * 100).toFixed(3)}%, slip ${(c.slippage.entryPct * 100).toFixed(3)}/${(c.slippage.stopPct * 100).toFixed(3)}%, spread ${(c.spreadPct * 100).toFixed(3)}% -> gross & net R\n`);
 
   // --- Gather trades (all symbols × timeframes) ----------------------------
+  // Fetch REAL higher-timeframe series (bias + regime) once per (symbol, htfIv),
+  // consumed via htfSliceAtTime — identical to the live scanner (parity).
   const htfCache = new Map();
-  const getHTF = async (sym) => {
-    if (htfCache.has(sym)) return htfCache.get(sym);
-    const hl = clamp(Math.ceil((limit * intervalMinutes(matrix ? "5m" : tf)) / intervalMinutes(htfTf)) + 80, 100, 1000);
+  const fetchHtf = async (sym, htfIv) => {
+    const key = `${sym}:${htfIv}`;
+    if (htfCache.has(key)) return htfCache.get(key);
+    const baseTf = matrix ? "5m" : tf;
+    const hl = clamp(Math.ceil((limit * intervalMinutes(baseTf)) / intervalMinutes(htfIv)) + 80, 100, 1000);
     let h = [];
-    try { h = await provider.getKlines(sym, htfTf, hl); } catch { h = []; }
-    htfCache.set(sym, h);
+    try { h = await provider.getKlines(sym, htfIv, hl); } catch { h = []; }
+    htfCache.set(key, h);
     return h;
   };
 
   const all = [];
   for (const sym of symbols) {
-    const htf = await getHTF(sym);
+    const htf = await fetchHtf(sym, htfTf);
+    const regime = await fetchHtf(sym, regimeTf);
     for (const t of timeframes) {
       let candles;
       try { candles = await provider.getKlines(sym, t, limit); }
       catch (e) { if (!scan) throw e; console.error(`  ${sym} ${t}: fetch failed (${e.message})`); continue; }
       if (!candles || candles.length < CONFIG.backtest.warmup + 30) continue;
-      if (walk && !scan && !matrix) { await runWalkForward(candles, sym, t, htf); return finish(); }
-      for (const tr of replay(candles, sym, t, htf)) all.push(tr);
+      if (walk && !scan && !matrix) { await runWalkForward(candles, sym, t, htf, regime); return finish(); }
+      for (const tr of replay(candles, sym, t, htf, regime)) all.push(tr);
       if (!demo) await sleep(CONFIG.timing.klineStaggerMs);
     }
   }
@@ -112,7 +118,7 @@ function finish() {
 }
 
 // --- Replay one series (optionally only bars in [from,to)) -----------------
-function replay(candles, sym, tf, htf, from, to) {
+function replay(candles, sym, tf, htf, regime, from, to) {
   const warmup = CONFIG.backtest.warmup;
   from = from ?? warmup;
   to = to ?? candles.length - 2;
@@ -121,7 +127,11 @@ function replay(candles, sym, tf, htf, from, to) {
   for (let i = Math.max(warmup, from); i < to; i++) {
     const slice = candles.slice(0, i + 1);
     const htfSlice = htfSliceAtTime(htf, candles[i].time);
-    const dec = evaluate(slice, htfSlice, { symbol: sym, interval: tf, htfInterval: CONFIG.scanner.htfTimeframe });
+    const regimeSlice = htfSliceAtTime(regime, candles[i].time);
+    const dec = evaluate(slice, htfSlice, {
+      symbol: sym, interval: tf, htfInterval: CONFIG.htf.biasTf,
+      regimeCandles: regimeSlice, regimeInterval: CONFIG.htf.regimeTf,
+    });
     if (dec.status !== "ACTIVE") continue;
     const p = dec.plan;
     const key = `${p.id}:${p.triggerIndex}:${p.direction}`;
@@ -229,7 +239,7 @@ function reportNegative(all) {
 }
 
 // --- Walk-forward ----------------------------------------------------------
-async function runWalkForward(candles, sym, tf, htf) {
+async function runWalkForward(candles, sym, tf, htf, regime) {
   const folds = 3;
   const warmup = CONFIG.backtest.warmup;
   const usable = candles.length - warmup;
@@ -253,14 +263,14 @@ async function runWalkForward(candles, sym, tf, htf) {
     let best = null;
     for (const g of grid) {
       CONFIG.gate.minAgree = g.minAgree; CONFIG.gate.minRR = g.minRR; CONFIG.scalper.stopCapPct[tf] = baseCap * g.capScale;
-      const tr = replay(candles, sym, tf, htf, trainFrom, trainTo);
+      const tr = replay(candles, sym, tf, htf, regime, trainFrom, trainTo);
       const exp = mean(tr.map((t) => t.netR));
       const score = tr.length >= 3 ? exp : -Infinity; // ignore too-thin combos
       if (!best || score > best.score) best = { g, score, exp, n: tr.length };
     }
     // Evaluate chosen params out-of-sample.
     CONFIG.gate.minAgree = best.g.minAgree; CONFIG.gate.minRR = best.g.minRR; CONFIG.scalper.stopCapPct[tf] = baseCap * best.g.capScale;
-    const oos = replay(candles, sym, tf, htf, testFrom, testTo).map((t) => ({ ...t, fold: f }));
+    const oos = replay(candles, sym, tf, htf, regime, testFrom, testTo).map((t) => ({ ...t, fold: f }));
     for (const t of oos) oosAll.push(t);
     console.log("  " + pad(f, 6) + pad(`${trainFrom}:${trainTo}`, 16) + pad(`(${best.g.minAgree},${best.g.minRR},${best.g.capScale})`, 32) + pad(fmtR(best.exp), 10) + pad(fmtR(mean(oos.map((t) => t.netR))), 13) + oos.length);
   }

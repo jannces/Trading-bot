@@ -146,7 +146,13 @@ A signal **LOCKS** only when ALL hold (all thresholds in `js/config.js`):
 1. a setup triggered within `gate.triggerRecencyBars` (3) bars,
 2. **≥ `gate.minAgree` (6) of 10** strategies agree with the setup direction,
    and none of `gate.vetoStrategies` (RSI, SMC, S/R) contradicts,
-3. **HTF (15m) bias is not counter** (bias from EMA structure + swings),
+3. **HTF bias TF (`config.htf.biasTf`, 15m) is not counter** — a HARD gate
+   (bias from EMA structure + swings). A second, slower **regime layer**
+   (`config.htf.regimeTf`, 1h) is checked too: if its structure OPPOSES the
+   signal, `config.htf.regimeMode` decides — `"downgrade"` lowers the tier one
+   notch (default), `"veto"` rejects it, `"off"` ignores it. The backtest
+   consumes real 1h klines the same way it does 15m (parity). The separate BTC
+   market-regime filter (`config.regime`) stays on 15m, unchanged.
 4. **R:R to TP1 ≥ `gate.minRR` (1.2)** with room to the nearest opposing
    structure, and
 5. **scalper guardrail:** stop distance ≤ `scalper.stopCapPct[tf]`
@@ -198,6 +204,9 @@ count, HTF), **named contributors** with individual scores, a plain-language
 
 | Key | Meaning |
 |---|---|
+| `htf.biasTf` / `htf.regimeTf` | directional bias TF (hard gate) / slower regime TF (Task 2) |
+| `htf.regimeMode` | `"downgrade"` \| `"veto"` \| `"off"` — action when the regime TF opposes a signal |
+| `scanner.timeframes` | which TFs are scanned (default `["5m"]`; add `"1m"` to re-enable) (Task 1) |
 | `regime.btcFilter` | `"off"` \| `"suppress"` \| `"downgrade"` — how to treat alts counter to BTC bias |
 | `regime.btcSymbol` / `regime.btcTimeframe` | which symbol/timeframe defines the market regime |
 | `exposure.maxSameDirection` | ACTIVE same-direction signals allowed before new ones are flagged `exposureCapped` |

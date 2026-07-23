@@ -22,7 +22,6 @@ export const CONFIG = {
     //   timeframes: ["1m", "5m"]
     // When "1m" is not listed, its klines are never fetched (less API load).
     timeframes: ["5m"],
-    htfTimeframe: "15m", // higher-timeframe bias filter (see config.htf)
     require5mAgreeFor1m: true, // when 1m IS scanned, its signals need 5m agreement
     klineLimit: 200, // candles held per pair/timeframe
     // Exclude leveraged tokens (…3L/3S/5L/5S…) and stable-vs-stable pairs.
@@ -40,6 +39,16 @@ export const CONFIG = {
     incrementalKlineLimit: 3, // per cycle, fetch only the last N candles and merge
     candleCloseGraceMs: 1500, // scan this long after each 1m candle close (live mode)
   },
+
+  // -- Two-layer higher-timeframe bias --------------------------------------
+  // biasTf   = directional bias, a HARD gate (counter-bias setups are rejected).
+  // regimeTf = a slower regime check: if its structure OPPOSES the signal,
+  //            regimeMode decides what happens:
+  //              "downgrade" -> lower tier by one (A+->A->B)  [default]
+  //              "veto"      -> reject the signal (hard, like biasTf)
+  //              "off"       -> ignore the regime layer
+  // The backtest consumes real regimeTf klines the same way it does biasTf.
+  htf: { biasTf: "15m", regimeTf: "1h", regimeMode: "downgrade" },
 
   // -- Live feed mode -------------------------------------------------------
   // "poll" = fast REST polling for prices (default, verified path).
@@ -124,7 +133,7 @@ export const CONFIG = {
     pivotLeft: 2, pivotRight: 2,
   },
 
-  // HTF used by the backtest per timeframe (scanner uses scanner.htfTimeframe).
+  // HTF used by the standalone backtest per timeframe (scanner uses config.htf).
   htfMap: { "1m": "15m", "5m": "15m", "15m": "1h", "1h": "4h", "4h": "1d", "1d": "1w" },
 
   backtest: { maxBarsToFill: 10, warmup: 120 },

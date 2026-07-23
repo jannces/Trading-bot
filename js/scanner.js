@@ -53,9 +53,9 @@ export class Scanner {
   async scan() {
     const t0 = Date.now();
     const syms = this.symbols();
-    // Only the configured scan timeframes (+ the HTF bias TF) are fetched, so
-    // dropping "1m" from config.scanner.timeframes stops fetching 1m klines.
-    const tfs = [...new Set([...CONFIG.scanner.timeframes, CONFIG.scanner.htfTimeframe])];
+    // Only the configured scan timeframes (+ the HTF bias TF + regime TF) are
+    // fetched, so dropping "1m" from config.scanner.timeframes stops 1m klines.
+    const tfs = [...new Set([...CONFIG.scanner.timeframes, CONFIG.htf.biasTf, CONFIG.htf.regimeTf])];
 
     // Fetch klines for every pair/timeframe with a concurrency cap.
     await runLimited(
@@ -114,18 +114,21 @@ export class Scanner {
 
   evaluatePair(sym, tf) {
     const candles = this.klines.get(`${sym}:${tf}`);
-    const htf = this.klines.get(`${sym}:${CONFIG.scanner.htfTimeframe}`);
+    const htf = this.klines.get(`${sym}:${CONFIG.htf.biasTf}`);
+    const regime = this.klines.get(`${sym}:${CONFIG.htf.regimeTf}`);
     if (!candles || candles.length < CONFIG.backtest.warmup) return null;
 
-    const decision = evaluate(candles, htf || [], {
-      symbol: sym, interval: tf, htfInterval: CONFIG.scanner.htfTimeframe,
-    });
+    const meta = {
+      symbol: sym, interval: tf, htfInterval: CONFIG.htf.biasTf,
+      regimeCandles: regime || [], regimeInterval: CONFIG.htf.regimeTf,
+    };
+    const decision = evaluate(candles, htf || [], meta);
 
     // 1m signals also need 5m direction agreement.
     if (tf === "1m" && CONFIG.scanner.require5mAgreeFor1m && decision.status !== "NONE") {
       const c5 = this.klines.get(`${sym}:5m`);
       if (c5 && c5.length >= CONFIG.backtest.warmup) {
-        const d5 = evaluate(c5, htf || [], { symbol: sym, interval: "5m", htfInterval: CONFIG.scanner.htfTimeframe });
+        const d5 = evaluate(c5, htf || [], { symbol: sym, interval: "5m", htfInterval: CONFIG.htf.biasTf });
         const dir5 = d5.plan?.direction || (d5.htf.bias === "BULL" ? "LONG" : d5.htf.bias === "BEAR" ? "SHORT" : null);
         if (dir5 && decision.plan && dir5 !== decision.plan.direction) return null; // 5m disagrees -> drop
       }
@@ -180,6 +183,7 @@ export class Scanner {
       entryLow: plan.entryLow, entryHigh: plan.entryHigh, entryPrice: plan.entryPrice,
       stop: plan.stop, tp1: plan.tp1, tp2: plan.tp2,
       exposureCapped, btcBias, hourUTC,
+      regimeBias: plan.regimeBias ?? "NEUTRAL", regimeDowngraded: !!plan.regimeDowngraded,
       createdAt: plan.triggerTime, status: "open", realizedR: null, grossR: null, closedAt: null,
     });
     this.onNewSignal(sig);

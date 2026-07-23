@@ -40,32 +40,43 @@ export function evaluate(candles, htfCandles, meta = {}) {
   );
   const htf = htfBias(htfCandles);
   const htfLabel = meta.htfInterval || "HTF";
+  // Second (slower) HTF layer: regime. Structure that opposes the signal either
+  // downgrades the tier or vetoes it, per config.htf.regimeMode.
+  const regime = meta.regimeCandles && meta.regimeCandles.length ? htfBias(meta.regimeCandles) : { bias: "NEUTRAL", strong: false, reason: "no regime data" };
+  const regimeMode = (CONFIG.htf && CONFIG.htf.regimeMode) || "off";
+  const rctx = { regime, regimeMode, regimeLabel: meta.regimeInterval || "regime" };
 
   const passing = [];
   const forming = [];
 
   for (const setup of setups) {
-    const e = evaluateSetup(setup, results, htf, ctx, candles, meta.interval);
+    const e = evaluateSetup(setup, results, htf, ctx, candles, meta.interval, rctx);
     if (e.pass) passing.push({ setup, ...e });
     else if (e.forming) forming.push({ setup, ...e });
   }
 
   if (passing.length) {
     passing.sort((a, b) => b.alignedCount - a.alignedCount || SETUP_PRIORITY.indexOf(a.setup.id) - SETUP_PRIORITY.indexOf(b.setup.id));
-    const plan = buildPlan(passing[0], htf, htfLabel, meta, results, candles, false);
-    return { status: "ACTIVE", plan, strategies: results, htf };
+    const plan = buildPlan(passing[0], htf, htfLabel, meta, results, candles, false, rctx);
+    return { status: "ACTIVE", plan, strategies: results, htf, regime };
   }
   if (forming.length) {
     forming.sort((a, b) => b.alignedCount - a.alignedCount);
-    const plan = buildPlan(forming[0], htf, htfLabel, meta, results, candles, true);
+    const plan = buildPlan(forming[0], htf, htfLabel, meta, results, candles, true, rctx);
     plan.missing = forming[0].missing;
-    return { status: "FORMING", plan, strategies: results, htf };
+    return { status: "FORMING", plan, strategies: results, htf, regime };
   }
-  return { status: "NONE", strategies: results, htf };
+  return { status: "NONE", strategies: results, htf, regime };
+}
+
+/** Is the regime bias opposite to a setup direction? */
+function regimeOpposes(regime, direction) {
+  if (!regime || regime.bias === "NEUTRAL") return false;
+  return direction === "LONG" ? regime.bias === "BEAR" : regime.bias === "BULL";
 }
 
 // ---------------------------------------------------------------------------
-function evaluateSetup(setup, results, htf, ctx, candles, interval) {
+function evaluateSetup(setup, results, htf, ctx, candles, interval, rctx) {
   const wantSignal = setup.direction === "LONG" ? "BUY" : "SELL";
   const oppSignal = setup.direction === "LONG" ? "SELL" : "BUY";
   const aligned = results.filter((r) => r.signal === wantSignal);
@@ -89,10 +100,14 @@ function evaluateSetup(setup, results, htf, ctx, candles, interval) {
   const cap = CONFIG.scalper.stopCapPct[interval] ?? Infinity;
   const stopOk = stopPct <= cap;
 
+  // Regime layer (config.htf.regimeTf): opposing structure vetoes or downgrades.
+  const regimeCounter = rctx ? regimeOpposes(rctx.regime, setup.direction) : false;
+
   // Hard rejections (disqualify even from FORMING).
   const hard = [];
   if (veto) hard.push(`${veto.toUpperCase()} contradicts`);
   if (CONFIG.gate.requireHtfAlignment && counter) hard.push(`counter to ${htf.reason}`);
+  if (rctx && rctx.regimeMode === "veto" && regimeCounter) hard.push(`counter to ${rctx.regimeLabel} regime (${rctx.regime.reason})`);
   if (!rrRoomOk) hard.push(`R:R to TP1 < ${CONFIG.gate.minRR}`);
   if (!stopOk) hard.push(`stop ${stopPct.toFixed(2)}% > ${cap}% cap`);
 
@@ -103,7 +118,7 @@ function evaluateSetup(setup, results, htf, ctx, candles, interval) {
   const forming = !pass && hard.length === 0 && alignedCount >= CONFIG.gate.minAgree - CONFIG.gate.formingSlack;
   const missing = forming ? [`needs ${CONFIG.gate.minAgree - alignedCount} more confirmation(s)`] : hard;
 
-  return { pass, forming, alignedCount, aligned, htfAligned, htfStrong: htf.strong, stopPct, missing };
+  return { pass, forming, alignedCount, aligned, htfAligned, htfStrong: htf.strong, stopPct, missing, regimeCounter };
 }
 
 function roomToStructure(setup, ctx) {
@@ -116,7 +131,7 @@ function roomToStructure(setup, ctx) {
 }
 
 // ---------------------------------------------------------------------------
-function buildPlan(evald, htf, htfLabel, meta, results, candles, isForming) {
+function buildPlan(evald, htf, htfLabel, meta, results, candles, isForming, rctx) {
   const s = evald.setup;
   const R = Math.abs(s.entryPrice - s.stop);
   const long = s.direction === "LONG";
@@ -138,11 +153,21 @@ function buildPlan(evald, htf, htfLabel, meta, results, candles, isForming) {
   }
   const avgAligned = alignedStrengths.length ? alignedStrengths.reduce((a, b) => a + b, 0) / alignedStrengths.length : 0;
   const score = clamp(Math.round(s.strength * 0.4 + avgAligned * 0.4 + evald.alignedCount * 2.5 + (evald.htfStrong && evald.htfAligned ? 6 : 0)));
-  const tier = tierFor(evald.alignedCount, evald.htfStrong && evald.htfAligned);
+  let tier = tierFor(evald.alignedCount, evald.htfStrong && evald.htfAligned);
+
+  // Regime layer: downgrade tier by one when the slower TF opposes (and mode is
+  // "downgrade"). "veto" was already handled as a hard reject in evaluateSetup.
+  const regimeBias = rctx ? rctx.regime.bias : "NEUTRAL";
+  const regimeCounter = !!evald.regimeCounter;
+  const regimeDowngraded = regimeCounter && rctx && rctx.regimeMode === "downgrade";
+  if (regimeDowngraded) tier = downgradeTier(tier);
 
   const confluences = [];
   for (const h of s.hints) confluences.push(`${tfl} ${h}`.trim());
   confluences.push(htf.reason.replace(/^HTF/, htfLabel));
+  if (rctx && rctx.regime.bias !== "NEUTRAL") {
+    confluences.push(`${rctx.regimeLabel} regime ${rctx.regime.bias.toLowerCase()}${regimeDowngraded ? " — tier downgraded" : ""}`);
+  }
   for (const c of contributors.slice(1)) confluences.push(`${tfl} ${c.name} · ${c.score}`.trim());
 
   return {
@@ -169,9 +194,14 @@ function buildPlan(evald, htf, htfLabel, meta, results, candles, isForming) {
     triggerTime: s.triggerTime,
     rationale: s.rationale,
     forming: isForming,
+    regimeBias,
+    regimeCounter,
+    regimeDowngraded,
     createdAt: Date.now(),
   };
 }
+
+function downgradeTier(t) { return t === "A+" ? "A" : "B"; }
 
 function tierFor(aligned, htfStrongAligned) {
   const t = CONFIG.gate.tiers;
