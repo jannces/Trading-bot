@@ -317,24 +317,27 @@ Validation flags:
 
 ### Deep-history fetching (`fetch-data.js`)
 
-MEXC caps a single klines request at ~500 rows. `js/mexc.js getKlinesDeep` pages
-**forward via `startTime`** to assemble an arbitrary depth, stitching by open time
-(`stitchDeep`), de-duplicating overlaps, validating continuity (records gaps), and
-honoring rate-limit backoff. **Why forward:** a live `--debug` run showed MEXC's
-spot `/klines` time parameter is a **lower bound** (`endTime=…00:04:59.999`
-returned candles opening `00:05:00` onward, up to latest) — backward paging via
-`endTime` is impossible. So it starts at `windowStart = now − limit × intervalMs`
-and advances `startTime = newestOpenTime + 1ms` each page, continuing until a
-partial page / catching up to now. Failure modes are distinguished honestly:
-- **pagination stall** — a page returns rows that all merge to nothing
-  (`startTime` not advancing): `stalled:true`, an **error** (non-zero exit,
-  `manifest.stalls`).
+MEXC's spot `/klines` needs `startTime` **and** `endTime` sent **together**, with
+the window spanning **at most 7 days** — a lone time param is ignored and the
+latest `limit` rows are returned (the root cause of every earlier paging failure;
+limit default 500, max 1000). `js/mexc.js getKlinesDeep` therefore tiles
+`[now - limit x interval, now]` into consecutive **bounded sub-windows** of
+`min(limit, floor(7d / interval))` candles, sends both bounds each request, and
+steps forward from the last candle returned — stitching by open time
+(`stitchDeep`), de-duplicating overlaps, recording gaps, honoring backoff. The
+window is **interval-aware**: on coarse TFs the 7-day cap governs, not `limit`
+(1h -> `floor(7d/1h) = 168` candles/window regardless of `limit=1000`). Failure
+modes are distinguished honestly:
+- **pagination stall** — a window returns candles **outside** its requested range
+  (the "latest 500" symptom = params ignored): `stalled:true`, an **error**
+  (non-zero exit, `manifest.stalls`).
 - **listed later than window** — a newly-listed pair whose history begins after
-  `windowStart`: `listedLate:true`, **usable-but-short** (included in the matrix;
-  thin per-pair stats are already guarded by the min-trade threshold), *not* an
-  error.
-`--debug` prints, per request, the exact query params and the returned `openTime`
-range. `fetch-data.js` writes the pooled `--data` format:
+  `windowStart` (its early sub-windows come back empty): `listedLate:true`,
+  **usable-but-short** (included in the matrix; thin per-pair stats already guarded
+  by the min-trade threshold), *not* an error. Empty windows **between** populated
+  ones leave the candles missing, recorded by `stitchDeep` as gaps.
+`--debug` prints, per request, the exact query params (both bounds) and the
+returned `openTime` range. `fetch-data.js` writes the pooled `--data` format:
 
 ```bash
 node fetch-data.js --out ./klines --top 20 --limit 20000        # top-20 pairs, ~69 days of 5m

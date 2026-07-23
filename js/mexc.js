@@ -16,10 +16,14 @@ import { intervalMinutes } from "./htf.js";
 
 const BASE = CONFIG.exchange.rest;
 
-// MEXC caps a single klines request at ~500 rows. Deep history is assembled by
-// paging FORWARD via startTime (see getKlinesDeep — MEXC's time param is a lower
-// bound, so backward paging via endTime does not work).
+// MEXC's spot /klines needs startTime AND endTime TOGETHER, with the window
+// spanning at most 7 days; a lone startTime or lone endTime is ignored and the
+// latest `limit` rows are returned (this is why every earlier paging attempt
+// re-served the newest 500). Deep history is assembled by walking consecutive
+// bounded sub-windows forward — see getKlinesDeep. limit default 500, max 1000.
 export const KLINES_PAGE = 500;
+export const KLINES_MAX = 1000;
+export const KLINES_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // MEXC's max start→end span
 
 /** Map our timeframe name to a MEXC interval string (1h -> "60m"). */
 export function mexcInterval(tf) {
@@ -139,92 +143,96 @@ export function stitchDeep(pages, intervalMs, total) {
 }
 
 /**
- * Assemble the latest `total` candles by paging FORWARD via startTime.
+ * Assemble the latest `total` candles by walking consecutive BOUNDED sub-windows
+ * forward. Every request sends symbol, interval, limit, AND both startTime and
+ * endTime — MEXC ignores a lone time param (returning the latest `limit`) and
+ * rejects a start→end span over 7 days. So we tile `[now - total*int, now]` into
+ * sub-windows of `min(limit, floor(7d/int))` candles and step forward, continuing
+ * from the last candle each honored window returns.
  *
- * Why forward: MEXC's spot /klines time parameter behaves as a LOWER bound — a
- * request returns candles whose openTime is at/after the timestamp, ascending, up
- * to `limit`, clamped to the data that exists (confirmed on a live --debug run:
- * endTime=…00:04:59.999 returned candles opening 00:05:00 onward, up to latest).
- * Backward paging via endTime is therefore impossible; we page forward instead.
+ * Interval-aware: for a coarse TF the 7-day cap bounds the window, not `limit`
+ * (1h: floor(7d/1h) = 168 candles/window regardless of limit=1000).
  *
- * Cursor: start at `windowStart = now - total * intervalMs` (optionally clamped to
- * a known listing date), then advance `startTime = newestOpenTime + 1ms` each
- * page — 1ms past the last candle we hold, which excludes it and (given the ms
- * grid) cannot skip the next one, regardless of whether the bound is inclusive or
- * exclusive. Any residual overlap is de-duped by stitchDeep. Continue while pages
- * add NEW candles and we haven't caught up to `now`.
+ * Failure modes:
+ *   - PARAMS IGNORED -> a window returns candles OUTSIDE its requested range (the
+ *     "latest 500" symptom): `stalled:true`, an error. (This is the stall check
+ *     now that the cursor is a bounded window, not a lone timestamp.)
+ *   - LISTED LATE -> empty sub-windows before the pair's first candle are normal
+ *     (pre-listing): we skip forward and set `listedLate`. Empty windows BETWEEN
+ *     populated ones leave the candles missing, which stitchDeep records as gaps
+ *     (never silently filled).
  *
- * Ends:
- *   - a partial page (< pageSize) or newest reaching `now` -> reached the latest.
- *   - the FIRST window returns 0 rows -> the pair listed later than the window; we
- *     step the window forward and mark `listedLate` (a "limited history" warning,
- *     not a stall). received < requested with a clean earliest boundary is normal
- *     for a newly-listed pair.
- *   - a page returns rows that ALL merge to nothing (newAdded === 0) -> the API
- *     is not advancing startTime: a PAGINATION STALL, flagged as an error.
- *
- * `opts.fetchPage(symbol, tf, limit, startTime) -> Promise<candles ascending>` is
+ * `opts.fetchPage(symbol, tf, limit, startTime, endTime) -> candles ascending` is
  * injectable for testing; `opts.now` overrides Date.now(); `opts.listingDate`
- * clamps the window start; `opts.debug` (true|fn) logs a per-request trace.
+ * clamps the window start; `opts.pageSize` overrides the request limit (default
+ * KLINES_MAX=1000, self-adapting: if the endpoint caps at 500 the range check
+ * still passes and we simply make more requests); `opts.debug` (true|fn) traces.
  * @returns { candles, requested, received, uniqueTotal, pages, gaps, stalled, listedLate }
  */
 export async function getKlinesDeep(symbol, tf, total, opts = {}) {
-  const pageSize = opts.pageSize || KLINES_PAGE;
+  const reqLimit = opts.pageSize || KLINES_MAX;
   const maxRetries = opts.maxRetries ?? 4;
   const onProgress = opts.onProgress || (() => {});
   const debug = opts.debug ? (typeof opts.debug === "function" ? opts.debug : (m) => console.error(m)) : null;
-  const fetchPage = opts.fetchPage || ((sym, itf, limit, startTime) => fetchKlinePage(sym, itf, limit, startTime, maxRetries));
+  const fetchPage = opts.fetchPage || ((sym, itf, limit, st, et) => fetchKlinePage(sym, itf, limit, st, et, maxRetries));
   const intMs = intervalMinutes(tf) * 60000;
   const now = opts.now ?? Date.now();
 
+  // Candles per window: the smaller of the request limit and what fits in 7 days.
+  const perWindow = Math.max(1, Math.min(reqLimit, Math.floor(KLINES_WINDOW_MS / intMs)));
+  const windowSpanMs = (perWindow - 1) * intMs; // start→end span, strictly < 7 days
   const windowStart = Math.max(0, now - total * intMs);
-  let startTime = opts.listingDate != null ? Math.max(windowStart, opts.listingDate) : windowStart;
+  let cursor = opts.listingDate != null ? Math.max(windowStart, opts.listingDate) : windowStart;
 
   const pages = [];
   const seen = new Set();
-  let stalled = false;
-  let listedLate = false;
-  const maxPages = Math.ceil(total / pageSize) * 2 + 20; // safety (covers empty-window skips)
-  for (let p = 0; p < maxPages; p++) {
-    const page = await fetchPage(symbol, tf, pageSize, startTime);
+  let stalled = false, stallReason = null, listedLate = false, hasData = false;
+  const maxIters = Math.ceil((total * intMs) / (windowSpanMs || intMs)) + 50; // safety bound
+  for (let p = 0; p < maxIters && cursor < now; p++) {
+    const startTime = cursor;
+    const endTime = Math.min(cursor + windowSpanMs, now);
+    const page = await fetchPage(symbol, tf, reqLimit, startTime, endTime);
     const count = page ? page.length : 0;
     let newAdded = 0, oldest = Infinity, newest = -Infinity;
     if (count) for (const c of page) { if (!seen.has(c.time)) newAdded++; if (c.time < oldest) oldest = c.time; if (c.time > newest) newest = c.time; }
     if (debug) {
-      debug(`[deep] ${symbol} ${mexcInterval(tf)} req#${p + 1}: symbol=${symbol} interval=${mexcInterval(tf)} limit=${pageSize} startTime=${startTime} [${isoMs(startTime)}] -> returned ${count}`
+      debug(`[deep] ${symbol} ${mexcInterval(tf)} req#${p + 1}: symbol=${symbol} interval=${mexcInterval(tf)} limit=${reqLimit}`
+        + ` startTime=${startTime} [${isoMs(startTime)}] endTime=${endTime} [${isoMs(endTime)}] -> returned ${count}`
         + (count ? `, openTime ${isoMs(oldest)}..${isoMs(newest)}, new-after-merge ${newAdded}` : ""));
     }
     if (!count) {
-      if (seen.size === 0) {
-        // No data at the window start -> the pair listed later than the window.
-        // Step the window forward and keep looking (bounded by maxPages).
-        listedLate = true;
-        const advanced = startTime + pageSize * intMs;
-        if (advanced >= now) break; // no candles anywhere up to now
-        startTime = advanced;
-        continue;
-      }
-      break; // reached the newest available candle (nothing ahead)
+      if (!hasData) listedLate = true; // pre-listing empty window: skip forward
+      cursor = endTime + intMs;         // (empty windows AFTER data leave a stitchDeep gap)
+      continue;
+    }
+    // Params-honored check: candles must fall inside the window we asked for. If
+    // any land outside (tolerance 1 bar), MEXC ignored start/end and served the
+    // latest batch -> hard error.
+    if (oldest < startTime - intMs || newest > endTime + intMs) {
+      stalled = true;
+      stallReason = `window [${isoMs(startTime)}..${isoMs(endTime)}] returned openTime ${isoMs(oldest)}..${isoMs(newest)} — startTime/endTime ignored`;
+      if (debug) debug(`[deep] ${symbol} ${mexcInterval(tf)}: ✗ ${stallReason}`);
+      break;
     }
     pages.push(page);
     for (const c of page) seen.add(c.time);
+    hasData = true;
     onProgress({ pages: pages.length, received: seen.size, total });
-    if (newAdded === 0) { stalled = true; break; } // startTime not advancing -> stall
-    if (count < pageSize) break;         // partial page -> reached the latest available
-    if (newest >= now - intMs) break;    // caught up to the present
-    startTime = newest + 1;              // next window strictly after the last openTime (ms)
+    if (newAdded === 0) { stalled = true; stallReason = "window added no new candles"; break; }
+    cursor = newest + intMs; // continue from just after the last candle we received
   }
   const { candles, gaps, uniqueTotal } = stitchDeep(pages, intMs, total);
-  // Listed-late = the earliest candle we could get begins after the window we asked
-  // for (a newly-listed pair). Its history is complete-for-existence, just short.
   if (candles.length && candles[0].time > windowStart + intMs) listedLate = true;
-  return { candles, requested: total, received: candles.length, uniqueTotal, pages: pages.length, gaps, stalled, listedLate };
+  return { candles, requested: total, received: candles.length, uniqueTotal, pages: pages.length, gaps, stalled, stallReason, listedLate };
 }
 
 function isoMs(ms) { return Number.isFinite(ms) ? new Date(ms).toISOString() : String(ms); }
 
-async function fetchKlinePage(symbol, tf, limit, startTime, maxRetries) {
-  const q = `/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${mexcInterval(tf)}&limit=${limit}${startTime != null ? `&startTime=${startTime}` : ""}`;
+async function fetchKlinePage(symbol, tf, limit, startTime, endTime, maxRetries) {
+  // BOTH bounds are always sent (MEXC ignores a lone one); the caller keeps the
+  // start→end span under 7 days.
+  const q = `/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${mexcInterval(tf)}&limit=${limit}`
+    + `${startTime != null ? `&startTime=${startTime}` : ""}${endTime != null ? `&endTime=${endTime}` : ""}`;
   for (let attempt = 0; ; attempt++) {
     try { return parseKlines(await getJSON(q)); }
     catch (e) {

@@ -7,9 +7,9 @@
 //   node fetch-data.js --out ./klines --pairs BTCUSDT --limit 5000 --tfs 5m,15m,1h
 //   MOCK=1 node fetch-data.js --out ./klines --pairs BTCUSDT   (offline, small)
 //
-// MEXC caps a single klines request at ~500 rows; this pages FORWARD via
-// startTime (js/mexc.js getKlinesDeep) to reach an arbitrary --limit, stitching by
-// open time, de-duplicating overlaps, and validating continuity.
+// MEXC's klines needs startTime+endTime together (<=7-day window); this walks
+// bounded sub-windows forward (js/mexc.js getKlinesDeep) to reach an arbitrary
+// --limit, stitching by open time, de-duplicating overlaps, and recording gaps.
 //
 // Output per pair: <SYMBOL>.json = { symbol, "5m":[...], "15m":[...], "1h":[...] }
 // (parsed candles) — exactly what --data pooling loads. A manifest.json records
@@ -93,8 +93,8 @@ async function main() {
       // usable-but-short, NOT an error.
       if (res.stalled) {
         stalls++;
-        rec[tf].error = `pagination stall — the API stopped returning new candles after ${res.pages} page(s) (${res.received} unique). startTime is not advancing; run with --debug to see per-request openTime.`;
-        console.error(`  ${sym} ${tf}: ✗ PAGINATION STALL — requested ${want}, only ${res.received} unique after ${res.pages} pages (startTime not advancing). Re-run with --debug.`);
+        rec[tf].error = `pagination stall — MEXC ignored the start/end window (${res.stallReason || "returned candles outside the requested range"}). Deep history unavailable via this path; run with --debug to see per-request openTime.`;
+        console.error(`  ${sym} ${tf}: ✗ PAGINATION STALL — ${res.stallReason || "start/end window ignored"} (got ${res.received} unique after ${res.pages} windows). Re-run with --debug.`);
       } else {
         const label = res.listedLate ? "  ⓘ listed later than window (usable-but-short)"
           : res.received < want ? "  ⚠ short (limited history)" : "";
