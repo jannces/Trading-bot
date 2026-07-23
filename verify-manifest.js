@@ -21,6 +21,7 @@ export function verifyManifest(dir) {
   const man = JSON.parse(fs.readFileSync(manPath, "utf8"));
   const pairs = Object.keys(man.perPair || {});
   const issues = [];
+  const badPairs = new Set(); // pairs with at least one issue (any tf)
   const provenance = []; // { sym, tf, count, from, to }
 
   for (const sym of pairs) {
@@ -30,9 +31,10 @@ export function verifyManifest(dir) {
     try { obj = JSON.parse(fs.readFileSync(path.join(dir, `${sym}.json`), "utf8")); } catch { /* missing */ }
     for (const [tf, r] of Object.entries(rec)) {
       const ratio = r.requested ? r.received / r.requested : 0;
-      if (r.error) issues.push(`${sym} ${tf}: ERROR ${r.error}`);
-      else if (ratio < COMPLETE) issues.push(`${sym} ${tf}: short — received ${r.received}/${r.requested} (${(ratio * 100).toFixed(1)}%)`);
-      if (r.gaps > 0) issues.push(`${sym} ${tf}: ${r.gaps} continuity gap(s)`);
+      if (r.stalled || (r.error && /stall/i.test(r.error))) { issues.push(`${sym} ${tf}: PAGINATION STALL — ${r.error || "endTime not advancing"}`); badPairs.add(sym); }
+      else if (r.error) { issues.push(`${sym} ${tf}: ERROR ${r.error}`); badPairs.add(sym); }
+      else if (ratio < COMPLETE) { issues.push(`${sym} ${tf}: short — received ${r.received}/${r.requested} (${(ratio * 100).toFixed(1)}%)`); badPairs.add(sym); }
+      if (r.gaps > 0) { issues.push(`${sym} ${tf}: ${r.gaps} continuity gap(s)`); badPairs.add(sym); }
 
       const arr = obj && Array.isArray(obj[tf]) ? obj[tf] : null;
       if (arr && arr.length) {
@@ -42,7 +44,7 @@ export function verifyManifest(dir) {
       }
     }
   }
-  return { man, pairs, issues, provenance };
+  return { man, pairs, issues, provenance, badPairs: [...badPairs], stalls: (man.stalls || 0) };
 }
 
 function fmtDate(ms) { return Number.isFinite(ms) ? new Date(ms).toISOString().replace("T", " ").slice(0, 16) + "Z" : "?"; }

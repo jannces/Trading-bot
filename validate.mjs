@@ -29,6 +29,7 @@ function listPairFiles(dir) {
 }
 function loadObj(dir, file) { return JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")); }
 function tfLen(obj, tf) { return Array.isArray(obj[tf]) ? obj[tf].length : 0; }
+function clampFrac(v, def) { const n = parseFloat(v); return Number.isFinite(n) && n >= 0 && n <= 1 ? n : def; }
 
 // Run backtest.js, tee stdout to <outDir>/<name>.txt, and point --json at
 // <outDir>/<name>.json. Returns { seconds, status }.
@@ -57,6 +58,26 @@ function main() {
   const pairFiles = listPairFiles(dataDir);
   if (!pairFiles.length) { console.error(`No <SYMBOL>.json files in ${dataDir}.`); process.exit(2); }
   const nPairs = pairFiles.length;
+
+  // --- Data-quality gate: refuse to validate on known-bad data ---------------
+  // A validation run on a broken snapshot is worse than no run — it produces
+  // confident-looking numbers from garbage. If verify-manifest flagged more than
+  // MAX_BAD_FRACTION of pairs (default 20%, override VALIDATE_MAX_BAD_FRACTION),
+  // or ANY pagination stall occurred, abort with the fetch-fix instructions.
+  const maxBadFrac = clampFrac(process.env.VALIDATE_MAX_BAD_FRACTION, 0.20);
+  const badFrac = nPairs ? vm.badPairs.length / nPairs : 0;
+  if (vm.stalls > 0 || badFrac > maxBadFrac) {
+    console.error(`\n✗ ABORT — snapshot quality too low to validate.`);
+    if (vm.stalls > 0) console.error(`  ${vm.stalls} pagination stall(s): the deep fetch stopped advancing (endTime not honored). The "history" is bogus.`);
+    console.error(`  ${vm.badPairs.length}/${nPairs} pairs flagged (${(badFrac * 100).toFixed(0)}% > ${(maxBadFrac * 100).toFixed(0)}% budget). Bad pairs: ${vm.badPairs.join(", ") || "—"}`);
+    console.error(`\n  FIX THE FETCH, don't validate on this:`);
+    console.error(`   1. Re-run: node fetch-data.js --out ./data --top 20 --limit 20000 --tfs 5m,15m,1h --debug`);
+    console.error(`   2. Read the [deep] trace: if endTime is not advancing (same openTime range each request), MEXC is`);
+    console.error(`      ignoring endTime on this endpoint — deep history via backward paging is unavailable for those pairs.`);
+    console.error(`   3. Re-verify: node verify-manifest.js ./data  (must be clean before validating).`);
+    console.error(`\n  Nothing was measured. See RUN_ME.md.`);
+    process.exit(4);
+  }
 
   // Is 1m present (with enough depth to evaluate)?
   const has1m = pairFiles.some((f) => tfLen(loadObj(dataDir, f), "1m") >= CONFIG.backtest.warmup + 30);
@@ -121,6 +142,7 @@ function main() {
     generatedAt: new Date().toISOString(), dataDir, primaryTf, nPairs, has1m,
     pairs: pairFiles.map((f) => f.replace(/\.json$/, "")),
     manifestIssues: vm.issues,
+    dataQuality: { badPairs: vm.badPairs, badFraction: +badFrac.toFixed(3), maxBadFraction: maxBadFrac, stalls: vm.stalls },
     calibration: { singleSec, projectedSec, budgetSec: BUDGET_SEC, probePair: biggest.f.replace(/\.json$/, ""), probeCandles: biggest.n },
     timings: Object.fromEntries(Object.entries(runs).map(([k, v]) => [k, v.seconds])),
     replayWindowBars: CONFIG.replay.windowBars, minTradesForVerdict: CONFIG.backtest.minTradesForVerdict,

@@ -79,6 +79,51 @@ console.log("getKlinesDeep (synthetic paged source)");
   const res = await getKlinesDeep("X", "5m", 5000, { pageSize: KLINES_PAGE, fetchPage });
   eq(res.received, 300, "short history -> received = available");
   ok(res.received < res.requested, "requested vs received surfaced");
+  ok(res.stalled === false, "genuine short history is NOT a stall");
+}
+
+// --- Cursor: next endTime = oldest openTime - 1ms (openTime-inclusive) ------
+console.log("getKlinesDeep cursor");
+{
+  const full = mkSeries(2300);
+  const ends = [];
+  const fetchPage = async (sym, tf, limit, endTime) => {
+    ends.push(endTime);
+    const upto = endTime == null ? full : full.filter((c) => c.time <= endTime);
+    return upto.slice(-limit);
+  };
+  await getKlinesDeep("BTCUSDT", "5m", 2000, { pageSize: KLINES_PAGE, fetchPage });
+  eq(ends[0], undefined, "first request has no endTime (latest)");
+  // Page 0 returned full[1800..2299]; the cursor must step to full[1800].time - 1.
+  eq(ends[1], full[1800].time - 1, "2nd endTime = oldest openTime of page 1 minus 1ms");
+  ok(ends[1] < full[1800].time, "cursor strictly before the seam candle (no re-serve)");
+}
+
+// --- STALL: API ignores endTime and re-serves the same latest page ---------
+// Reproduces the real-run symptom (2 pages, 500 received) and asserts we DETECT
+// it as a stall (error), not silently report it as success/short-history.
+console.log("getKlinesDeep stall detection");
+{
+  const full = mkSeries(5000);
+  let calls = 0;
+  const fetchPage = async (sym, tf, limit /*, endTime IGNORED */) => { calls++; return full.slice(-limit); };
+  const res = await getKlinesDeep("STALLUSDT", "5m", 2000, { pageSize: KLINES_PAGE, fetchPage });
+  ok(res.stalled === true, "stall flagged when a page merges to zero new candles");
+  eq(res.pages, 2, "stops after the first non-advancing page (no infinite loop)");
+  eq(res.received, KLINES_PAGE, "received is just the one served page (500)");
+  ok(calls === 2, "made exactly 2 requests then bailed");
+}
+
+// --- --debug trace: one line per request, with the merge count -------------
+console.log("getKlinesDeep --debug");
+{
+  const full = mkSeries(1200);
+  const fetchPage = async (sym, tf, limit, endTime) => (endTime == null ? full : full.filter((c) => c.time <= endTime)).slice(-limit);
+  const lines = [];
+  const res = await getKlinesDeep("BTCUSDT", "5m", 1000, { pageSize: KLINES_PAGE, fetchPage, debug: (m) => lines.push(m) });
+  ok(lines.length === res.pages, `one debug line per request (${lines.length})`);
+  ok(/new-after-merge/.test(lines[0]) && /openTime/.test(lines[0]), "debug line has openTime range + merge count");
+  ok(/endTime=\(latest\)/.test(lines[0]), "first debug line shows endTime=(latest)");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

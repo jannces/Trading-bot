@@ -38,6 +38,7 @@ async function main() {
   const limit = Math.max(200, parseInt(argVal("--limit", "20000"), 10));
   const pairsArg = argVal("--pairs", null);
   const topN = parseInt(argVal("--top", ""), 10);
+  const debug = process.argv.includes("--debug"); // per-request paging trace to stderr
 
   // Timeframes: requested scan TFs + the HTF bias + regime layers (all needed by
   // the gate). Always include the primary (smallest) first.
@@ -65,6 +66,7 @@ async function main() {
   console.log(`Fetching ${pairs.length} pairs · TFs ${tfs.join("/")} · primary ${primaryTf} · target ${limit} candles (~${(spanMinutes / 1440).toFixed(1)} days) · ${MOCK ? "MOCK" : "MEXC"}\n`);
 
   const manifest = { fetchedAt: new Date().toISOString(), source: MOCK ? "mock" : "mexc", primaryTf, target: limit, tfs, perPair: {} };
+  let stalls = 0; // pagination stalls seen (an ERROR, distinct from short history)
 
   for (const sym of pairs) {
     const fileObj = { symbol: sym };
@@ -75,24 +77,40 @@ async function main() {
       try {
         res = MOCK
           ? await mockDeep(provider, sym, tf, want)
-          : await mexc.getKlinesDeep(sym, tf, want, { onProgress: () => {} });
+          : await mexc.getKlinesDeep(sym, tf, want, { onProgress: () => {}, debug });
       } catch (e) {
         console.error(`  ${sym} ${tf}: FAILED (${e.message})`);
         rec[tf] = { requested: want, received: 0, error: e.message };
         continue;
       }
       fileObj[tf] = res.candles;
-      rec[tf] = { requested: want, received: res.received, pages: res.pages, gaps: res.gaps.length };
-      const short = res.received < want ? "  ⚠ short (history/cap)" : "";
-      console.log(`  ${sym} ${tf}: requested ${want}, received ${res.received} (${res.pages} pages, ${res.gaps.length} gaps)${short}`);
+      rec[tf] = { requested: want, received: res.received, pages: res.pages, gaps: res.gaps.length, stalled: !!res.stalled };
+      // A STALL (pages returned data that merged to nothing) is an ERROR — the API
+      // stopped advancing, so the depth is bogus. Only call it "short history" when
+      // paging genuinely ran out of candles (no stall): a real limited-history pair.
+      if (res.stalled) {
+        stalls++;
+        rec[tf].error = `pagination stall — the API stopped returning new candles after ${res.pages} page(s) (${res.received} unique). endTime is not advancing; deep history is unavailable via this path. Run with --debug to see per-request openTime.`;
+        console.error(`  ${sym} ${tf}: ✗ PAGINATION STALL — requested ${want}, only ${res.received} unique after ${res.pages} pages (endTime not advancing). Re-run with --debug.`);
+      } else {
+        const short = res.received < want ? "  ⚠ short (limited history — genuine end of series)" : "";
+        console.log(`  ${sym} ${tf}: requested ${want}, received ${res.received} (${res.pages} pages, ${res.gaps.length} gaps)${short}`);
+      }
     }
     fs.writeFileSync(path.join(outDir, `${sym}.json`), JSON.stringify(fileObj));
     manifest.perPair[sym] = rec;
   }
 
+  manifest.stalls = stalls;
   fs.writeFileSync(path.join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2));
   console.log(`\nWrote ${pairs.length} pair files + manifest.json to ${outDir}`);
-  console.log(`Run: node backtest.js --walk --data ${outDir} ${primaryTf}`);
+  if (stalls) {
+    console.error(`\n✗ ${stalls} pagination stall(s) — this snapshot's deep history is NOT reliable. Do NOT validate on it.`);
+    console.error(`  Re-run with --debug to capture the exact per-request query params + returned openTime range, so the endTime/interval semantics can be confirmed.`);
+    process.exitCode = 1;
+  } else {
+    console.log(`Run: node backtest.js --walk --data ${outDir} ${primaryTf}`);
+  }
 }
 
 /** Offline mock "deep" fetch (single call; the mock has limited depth). */

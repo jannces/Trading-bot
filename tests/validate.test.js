@@ -66,6 +66,29 @@ ok("compare skipped (5m-only, no 1m)", cmp.skipped === true);
 const meta = JSON.parse(fs.readFileSync(path.join(outDir, "run-meta.json"), "utf8"));
 ok("run-meta records calibration + budget", meta.calibration && meta.calibration.budgetSec === 7200);
 ok("run-meta has1m=false", meta.has1m === false);
+ok("run-meta records dataQuality (clean)", meta.dataQuality && meta.dataQuality.badPairs.length === 0 && meta.dataQuality.stalls === 0);
+
+// --- Data-quality abort gate: a stalled snapshot must NOT be validated -------
+{
+  const badDir = path.join(tmp, "baddata");
+  const outBad = path.join(tmp, "outbad");
+  fs.mkdirSync(badDir, { recursive: true });
+  // 2 pairs, one with a pagination stall -> 50% bad + stalls>0 -> must abort.
+  const c5 = gen(560, 9, 100);
+  fs.writeFileSync(path.join(badDir, "AAAUSDT.json"), JSON.stringify({ symbol: "AAAUSDT", "5m": c5, "15m": resampleToHTF(c5, 3), "1h": resampleToHTF(c5, 12) }));
+  fs.writeFileSync(path.join(badDir, "BBBUSDT.json"), JSON.stringify({ symbol: "BBBUSDT", "5m": c5.slice(-500) }));
+  fs.writeFileSync(path.join(badDir, "manifest.json"), JSON.stringify({
+    source: "mexc", primaryTf: "5m", target: 20000, tfs: ["5m", "15m", "1h"], stalls: 1,
+    perPair: {
+      AAAUSDT: { "5m": { requested: 560, received: 560, pages: 1, gaps: 0 }, "15m": { requested: 187, received: resampleToHTF(c5, 3).length, pages: 1, gaps: 0 }, "1h": { requested: 47, received: resampleToHTF(c5, 12).length, pages: 1, gaps: 0 } },
+      BBBUSDT: { "5m": { requested: 20000, received: 500, pages: 2, gaps: 0, stalled: true, error: "pagination stall — endTime not advancing" } },
+    },
+  }));
+  const bad = spawnSync("node", ["validate.mjs", badDir], { cwd: ROOT, encoding: "utf8", env: { ...process.env, VALIDATE_OUT: outBad }, maxBuffer: 1e9 });
+  ok("validate ABORTS on stalled snapshot (exit 4)", bad.status === 4);
+  ok("abort message names the stall", /PAGINATION|stall/i.test((bad.stderr || "") + (bad.stdout || "")));
+  ok("no results dir created on abort", !fs.existsSync(outBad) || fs.readdirSync(outBad).length === 0);
+}
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n${passed} passed, ${failed} failed`);

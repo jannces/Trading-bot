@@ -320,8 +320,16 @@ Validation flags:
 MEXC caps a single klines request at ~500 rows. `js/mexc.js getKlinesDeep` pages
 **backward via `endTime`** to assemble an arbitrary depth, stitching by open
 time (`stitchDeep`), de-duplicating the seam candle, validating continuity
-(records gaps), and honoring rate-limit backoff. `fetch-data.js` uses it to write
-the pooled `--data` format:
+(records gaps), and honoring rate-limit backoff. The cursor steps to
+**`oldestOpenTime − 1ms`** each page (epoch-MS, `endTime` treated as an
+openTime-inclusive upper bound) and the loop continues **only while a page adds
+NEW candles**. If a page returns rows that all merge to nothing — the API ignored
+`endTime` and re-served the same batch — that is a **pagination stall**, surfaced
+as `stalled:true` and treated by `fetch-data.js` as an **error** (non-zero exit,
+`manifest.stalls`), distinct from a genuine short-history pair. `--debug` prints,
+per request, the exact query params and the returned `openTime` range so the
+semantics can be confirmed on a real run. `fetch-data.js` writes the pooled
+`--data` format:
 
 ```bash
 node fetch-data.js --out ./klines --top 20 --limit 20000        # top-20 pairs, ~69 days of 5m
@@ -351,7 +359,10 @@ each producing a durable artifact:
    (only if 1m is present; else records a `5m-only run`), and pooled `--walk 5m`
    over `./data`, saving human tables **and** machine JSON to
    `results/<timestamp>/`. It prints a **calibration** estimate (single-pair walk
-   timing × pair count) and **aborts if the projected walk exceeds 2 h**. Each mode
+   timing × pair count) and **aborts if the projected walk exceeds 2 h**. It also
+   **refuses known-bad data**: any pagination stall, or more than
+   `VALIDATE_MAX_BAD_FRACTION` (default 20%) of pairs flagged by `verify-manifest`,
+   aborts with fetch-fix instructions rather than measuring garbage. Each mode
    emits a `--json` sidecar so the analyzer never parses tables.
 3. **`node analyze-results.js results/<timestamp>/`** — applies the **conservative
    verdict** and writes `results/<timestamp>/VALIDATION.md` + a **proposed

@@ -38,7 +38,20 @@ node fetch-data.js --out .\data --top 20 --limit 20000 --tfs 5m,15m,1h
 
 This pages backward through MEXC's ~500-rows-per-request cap, so it makes many
 requests and takes a few minutes. It writes `.\data\<SYMBOL>.json` per pair plus
-`.\data\manifest.json` (requested vs received, pages, gaps).
+`.\data\manifest.json` (requested vs received, pages, gaps, stalls).
+
+> **If you see `PAGINATION STALL`** (e.g. "requested 20060, only 500 unique after
+> 2 pages — endTime not advancing"), the fetch exits non-zero and the snapshot is
+> unusable. Re-run with `--debug` to print, per request, the exact query params
+> and the returned `openTime` range:
+> ```powershell
+> node fetch-data.js --out .\data --top 20 --limit 20000 --tfs 5m,15m,1h --debug
+> ```
+> If the `[deep]` trace shows the **same** `openTime` window on every request, MEXC
+> is ignoring `endTime` on this endpoint for those symbols and deep backward paging
+> can't work — capture that trace so the cursor/interval semantics can be confirmed.
+> (A genuine short pair — "limited history — genuine end of series" — is fine, not a
+> stall.)
 
 > Optional — to also enable the `1m` vs `5m` comparison in Step 3, add `1m` to the
 > timeframes: `--tfs 1m,5m,15m,1h`. Without it the run is **5m-only** (the compare
@@ -78,8 +91,11 @@ machine-readable JSON) under `.\results\<timestamp>\`:
 
 Before running the heavy walk it prints a **calibration estimate** (single-pair
 timing × pair count) and **aborts with a warning if the projected time exceeds 2
-hours** — so you are never surprised by an overnight job. Note the
-`.\results\<timestamp>\` path it prints; you need it for Step 4.
+hours** — so you are never surprised by an overnight job. It also **refuses to run
+on known-bad data**: if a pagination stall occurred, or more than 20% of pairs are
+flagged by `verify-manifest` (override with `$env:VALIDATE_MAX_BAD_FRACTION="0.1"`),
+it aborts with fetch-fix instructions instead of producing confident numbers from
+garbage. Note the `.\results\<timestamp>\` path it prints; you need it for Step 4.
 
 ---
 

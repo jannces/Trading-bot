@@ -35,7 +35,15 @@ export const CONFIG = {
     klineLimit: WINDOW_BARS, // candles held per pair/timeframe (== replay.windowBars)
     // Exclude leveraged tokens (…3L/3S/5L/5S…) and stable-vs-stable pairs.
     excludeLeveraged: /(\d+[LS])USDT$/i,
-    stableBases: ["USDC", "USDT", "TUSD", "BUSD", "DAI", "FDUSD", "USDD", "USDP", "EURS"],
+    // Stablecoin BASES to drop when quoted vs USDT (a stable-vs-stable pair is not
+    // a scalp). This is THE list to extend when a new stable lists on MEXC — add
+    // the base symbol here (e.g. a new "FOOUSD" stable that trades as FOOUSDUSDT
+    // would need "FOOUSD"). Matched exactly against symbol.slice(0, -4).
+    stableBases: [
+      "USDC", "USDT", "TUSD", "BUSD", "DAI", "FDUSD", "USDD", "USDP", "EURS",
+      "USD1", "PYUSD", "USDE", "GUSD", "LUSD", "USTC", "USDJ", "EURT", "EURI",
+      "CRVUSD", "FRAX", "USDG", "USDY",
+    ],
   },
 
   // -- Live price + scan cadence (server-side) ------------------------------

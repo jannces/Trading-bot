@@ -62,5 +62,23 @@ console.log("parseTicker24hr + rankTopPairs (fixture)");
   for (let i = 1; i < top.length; i++) ok(top[i - 1].quoteVolume >= top[i].quoteVolume, `sorted desc @${i}`);
 }
 
+// Extended stable-vs-stable filter: USD1USDT (and other current stables) must be
+// excluded; a real alt with a stable-looking prefix must NOT be.
+console.log("rankTopPairs stable filter (extended)");
+{
+  const mk = (symbol, qv) => ({ symbol, lastPrice: 1, priceChangePercent: 0, quoteVolume: qv });
+  const t = [
+    mk("BTCUSDT", 1e9), mk("ETHUSDT", 8e8),
+    mk("USD1USDT", 5e8), mk("FDUSDUSDT", 5e8), mk("PYUSDUSDT", 4e8),
+    mk("USDEUSDT", 4e8), mk("USDCUSDT", 3e8), mk("EURTUSDT", 2e8),
+    mk("USDDUSDT", 2e8), mk("USDT3LUSDT", 1e8),
+  ];
+  const syms = rankTopPairs(t, 20).map((x) => x.symbol);
+  for (const bad of ["USD1USDT", "FDUSDUSDT", "PYUSDUSDT", "USDEUSDT", "USDCUSDT", "EURTUSDT", "USDDUSDT"]) {
+    ok(!syms.includes(bad), `excludes stable ${bad}`);
+  }
+  ok(syms.includes("BTCUSDT") && syms.includes("ETHUSDT"), "keeps real alts (BTC/ETH)");
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

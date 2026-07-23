@@ -138,41 +138,64 @@ export function stitchDeep(pages, intervalMs, total) {
 }
 
 /**
- * Assemble up to `total` candles by paging backward via endTime. Each page is
- * fetched newest-first; the earliest open time of a page becomes the next
- * page's endTime-1 (so the seam candle is excluded, and any residual overlap is
- * de-duplicated by stitchDeep). Honors rate-limit backoff.
+ * Assemble up to `total` candles by paging backward via endTime.
+ *
+ * Cursor: MEXC klines take epoch-MS `startTime`/`endTime`; `endTime` bounds the
+ * OPEN time inclusively (a candle whose openTime <= endTime can be returned). So
+ * the next page's endTime is `oldestOpenTime - 1ms` — one millisecond before the
+ * oldest candle we already hold, which EXCLUDES that seam candle and cannot skip
+ * the candle immediately before it (any residual overlap is de-duped by
+ * stitchDeep). We use the true minimum open time of the page, not page[0], in
+ * case a page ever comes back out of order.
+ *
+ * The loop continues while each page adds NEW candles and we're under `total`.
+ * If a page returns rows but every one is already seen (newAdded === 0), that is
+ * a PAGINATION STALL — the API ignored/!advanced endTime and re-served the same
+ * batch. We stop and flag `stalled` so the caller treats it as an ERROR, not as
+ * "reached the start of history" (a genuine end returns FEWER rows, or zero).
  *
  * `opts.fetchPage(symbol, tf, limit, endTime) -> Promise<candles ascending>` is
  * injectable for testing (defaults to the real networked page fetch).
- * @returns { candles, requested, received, uniqueTotal, pages, gaps }
+ * `opts.debug` (true, or a fn) logs per-request query params + counts to stderr.
+ * @returns { candles, requested, received, uniqueTotal, pages, gaps, stalled }
  */
 export async function getKlinesDeep(symbol, tf, total, opts = {}) {
   const pageSize = opts.pageSize || KLINES_PAGE;
   const maxRetries = opts.maxRetries ?? 4;
   const onProgress = opts.onProgress || (() => {});
+  const debug = opts.debug ? (typeof opts.debug === "function" ? opts.debug : (m) => console.error(m)) : null;
   const fetchPage = opts.fetchPage || ((sym, itf, limit, endTime) => fetchKlinePage(sym, itf, limit, endTime, maxRetries));
   const intMs = intervalMinutes(tf) * 60000;
 
   const pages = [];
   const seen = new Set();
   let end; // ms; undefined = latest
+  let stalled = false;
   const maxPages = Math.ceil(total / pageSize) + 5; // safety bound
   for (let p = 0; p < maxPages; p++) {
     const page = await fetchPage(symbol, tf, pageSize, end);
-    if (!page || !page.length) break;
+    const count = page ? page.length : 0;
+    let newAdded = 0, oldest = Infinity, newest = -Infinity;
+    if (count) for (const c of page) { if (!seen.has(c.time)) newAdded++; if (c.time < oldest) oldest = c.time; if (c.time > newest) newest = c.time; }
+    if (debug) {
+      debug(`[deep] ${symbol} ${mexcInterval(tf)} req#${p + 1}: symbol=${symbol} interval=${mexcInterval(tf)} limit=${pageSize} endTime=${end ?? "(latest)"}`
+        + `${end != null ? ` [${isoMs(end)}]` : ""} -> returned ${count}`
+        + (count ? `, openTime ${isoMs(oldest)}..${isoMs(newest)}, new-after-merge ${newAdded}` : ""));
+    }
+    if (!count) break;                    // genuine end of history at the API level
     pages.push(page);
     for (const c of page) seen.add(c.time);
     onProgress({ pages: pages.length, received: seen.size, total });
+    if (newAdded === 0) { stalled = true; break; } // data returned but merged to nothing -> stall
     if (seen.size >= total) break;
-    if (page.length < pageSize) break; // reached the start of available history
-    const nextEnd = page[0].time - 1; // page[0] is the earliest of this page
-    if (end !== undefined && nextEnd >= end) break; // no backward progress -> stop
-    end = nextEnd;
+    if (count < pageSize) break;          // short page -> reached the start of available history
+    end = oldest - 1;                     // step the cursor strictly before the oldest openTime (ms)
   }
   const { candles, gaps, uniqueTotal } = stitchDeep(pages, intMs, total);
-  return { candles, requested: total, received: candles.length, uniqueTotal, pages: pages.length, gaps };
+  return { candles, requested: total, received: candles.length, uniqueTotal, pages: pages.length, gaps, stalled };
 }
+
+function isoMs(ms) { return Number.isFinite(ms) ? new Date(ms).toISOString() : String(ms); }
 
 async function fetchKlinePage(symbol, tf, limit, endTime, maxRetries) {
   const q = `/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${mexcInterval(tf)}&limit=${limit}${endTime != null ? `&endTime=${endTime}` : ""}`;

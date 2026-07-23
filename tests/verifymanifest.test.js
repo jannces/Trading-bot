@@ -51,8 +51,33 @@ console.log("verify-manifest");
 {
   const dir = mkdir();
   writeSnap(dir, { XRPUSDT: { "1h": { requested: 100, received: 0, error: "boom" } } }, { XRPUSDT: { symbol: "XRPUSDT" } });
-  const { issues } = verifyManifest(dir);
+  const { issues, badPairs } = verifyManifest(dir);
   ok("errored series flagged", issues.some((s) => /ERROR boom/.test(s)));
+  ok("errored pair in badPairs", badPairs.includes("XRPUSDT"));
+}
+
+// 3b. Pagination stall -> flagged distinctly + badPairs + surfaces manifest.stalls.
+{
+  const dir = mkdir();
+  fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({
+    source: "mexc", primaryTf: "5m", target: 20000, tfs: ["5m"], stalls: 1,
+    perPair: { SOLUSDT: { "5m": { requested: 20000, received: 500, pages: 2, gaps: 0, stalled: true, error: "pagination stall — endTime not advancing" } } },
+  }));
+  fs.writeFileSync(path.join(dir, "SOLUSDT.json"), JSON.stringify({ symbol: "SOLUSDT", "5m": candles(500) }));
+  const { issues, badPairs, stalls } = verifyManifest(dir);
+  ok("stall flagged as PAGINATION STALL", issues.some((s) => /PAGINATION STALL/.test(s)));
+  ok("stalled pair in badPairs", badPairs.includes("SOLUSDT"));
+  ok("manifest stalls surfaced", stalls === 1);
+}
+
+// 3c. Clean multi-pair -> badPairs empty.
+{
+  const dir = mkdir();
+  writeSnap(dir,
+    { AAAUSDT: { "5m": { requested: 500, received: 500, pages: 1, gaps: 0 } }, BBBUSDT: { "5m": { requested: 500, received: 500, pages: 1, gaps: 0 } } },
+    { AAAUSDT: { symbol: "AAAUSDT", "5m": candles(500) }, BBBUSDT: { symbol: "BBBUSDT", "5m": candles(500) } });
+  const { badPairs } = verifyManifest(dir);
+  ok("clean multi-pair -> no bad pairs", badPairs.length === 0);
 }
 
 // 4. Missing manifest -> throws.
