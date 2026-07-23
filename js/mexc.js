@@ -12,8 +12,13 @@
 //   GET /api/v3/ticker/price                       -> array of {symbol, price}
 // ============================================================================
 import { CONFIG } from "./config.js";
+import { intervalMinutes } from "./htf.js";
 
 const BASE = CONFIG.exchange.rest;
+
+// MEXC caps a single klines request at ~500 rows. Deep history is assembled by
+// paging backward via endTime (see getKlinesDeep).
+export const KLINES_PAGE = 500;
 
 /** Map our timeframe name to a MEXC interval string (1h -> "60m"). */
 export function mexcInterval(tf) {
@@ -97,8 +102,89 @@ async function getJSON(path, timeoutMs = 12000) {
 
 export async function getKlines(symbol, tf, limit = 200) {
   const raw = await getJSON(`/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${mexcInterval(tf)}&limit=${limit}`);
-  return parseKlines(raw);
+  const candles = parseKlines(raw);
+  // A single request is capped at ~KLINES_PAGE; surface silent truncation so a
+  // consumer that asked for more than one page's worth isn't misled.
+  if (limit > KLINES_PAGE && candles.length < limit) warnCapOnce(symbol, tf, limit, candles.length);
+  return candles;
 }
+
+const _capWarned = new Set();
+function warnCapOnce(symbol, tf, requested, received) {
+  const k = `${symbol}:${tf}`;
+  if (_capWarned.has(k)) return;
+  _capWarned.add(k);
+  console.warn(`[mexc] ${symbol} ${tf}: requested ${requested} klines, received ${received} (single-request cap ~${KLINES_PAGE}). Use getKlinesDeep / fetch-data.js for deep history.`);
+}
+
+// --- Deep history via backward pagination ----------------------------------
+
+/**
+ * Stitch fetched pages (each ascending by open time) into one continuous,
+ * de-duplicated ascending series and keep the most recent `total`. Pure so it
+ * can be unit-tested. Records continuity gaps (missing candles) — never fatal.
+ * @returns { candles, gaps:[{after,before,missing}], uniqueTotal }
+ */
+export function stitchDeep(pages, intervalMs, total) {
+  const map = new Map();
+  for (const page of pages) for (const c of page) map.set(c.time, c); // dedupe by open time
+  const all = [...map.values()].sort((a, b) => a.time - b.time);
+  const gaps = [];
+  for (let i = 1; i < all.length; i++) {
+    const d = all[i].time - all[i - 1].time;
+    if (d !== intervalMs) gaps.push({ after: all[i - 1].time, before: all[i].time, missing: Math.max(0, Math.round(d / intervalMs) - 1) });
+  }
+  return { candles: total > 0 ? all.slice(-total) : all, gaps, uniqueTotal: all.length };
+}
+
+/**
+ * Assemble up to `total` candles by paging backward via endTime. Each page is
+ * fetched newest-first; the earliest open time of a page becomes the next
+ * page's endTime-1 (so the seam candle is excluded, and any residual overlap is
+ * de-duplicated by stitchDeep). Honors rate-limit backoff.
+ *
+ * `opts.fetchPage(symbol, tf, limit, endTime) -> Promise<candles ascending>` is
+ * injectable for testing (defaults to the real networked page fetch).
+ * @returns { candles, requested, received, uniqueTotal, pages, gaps }
+ */
+export async function getKlinesDeep(symbol, tf, total, opts = {}) {
+  const pageSize = opts.pageSize || KLINES_PAGE;
+  const maxRetries = opts.maxRetries ?? 4;
+  const onProgress = opts.onProgress || (() => {});
+  const fetchPage = opts.fetchPage || ((sym, itf, limit, endTime) => fetchKlinePage(sym, itf, limit, endTime, maxRetries));
+  const intMs = intervalMinutes(tf) * 60000;
+
+  const pages = [];
+  const seen = new Set();
+  let end; // ms; undefined = latest
+  const maxPages = Math.ceil(total / pageSize) + 5; // safety bound
+  for (let p = 0; p < maxPages; p++) {
+    const page = await fetchPage(symbol, tf, pageSize, end);
+    if (!page || !page.length) break;
+    pages.push(page);
+    for (const c of page) seen.add(c.time);
+    onProgress({ pages: pages.length, received: seen.size, total });
+    if (seen.size >= total) break;
+    if (page.length < pageSize) break; // reached the start of available history
+    const nextEnd = page[0].time - 1; // page[0] is the earliest of this page
+    if (end !== undefined && nextEnd >= end) break; // no backward progress -> stop
+    end = nextEnd;
+  }
+  const { candles, gaps, uniqueTotal } = stitchDeep(pages, intMs, total);
+  return { candles, requested: total, received: candles.length, uniqueTotal, pages: pages.length, gaps };
+}
+
+async function fetchKlinePage(symbol, tf, limit, endTime, maxRetries) {
+  const q = `/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${mexcInterval(tf)}&limit=${limit}${endTime != null ? `&endTime=${endTime}` : ""}`;
+  for (let attempt = 0; ; attempt++) {
+    try { return parseKlines(await getJSON(q)); }
+    catch (e) {
+      if (e.rateLimited && attempt < maxRetries) { await sleep(CONFIG.timing.backoffBaseMs * 2 ** attempt); continue; }
+      throw e;
+    }
+  }
+}
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 export async function get24hr() {
   return parseTicker24hr(await getJSON(`/api/v3/ticker/24hr`));

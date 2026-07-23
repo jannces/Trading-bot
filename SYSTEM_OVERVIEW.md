@@ -281,6 +281,26 @@ Validation flags:
   a single 5m pair never can. (Replay is O(n²) in candles, so keep pools/candle
   counts modest; a large 50-pair run is a long analysis job.)
 
+### Deep-history fetching (`fetch-data.js`)
+
+MEXC caps a single klines request at ~500 rows. `js/mexc.js getKlinesDeep` pages
+**backward via `endTime`** to assemble an arbitrary depth, stitching by open
+time (`stitchDeep`), de-duplicating the seam candle, validating continuity
+(records gaps), and honoring rate-limit backoff. `fetch-data.js` uses it to write
+the pooled `--data` format:
+
+```bash
+node fetch-data.js --out ./klines --top 20 --limit 20000        # top-20 pairs, ~69 days of 5m
+node fetch-data.js --out ./klines --pairs BTCUSDT,ETHUSDT --limit 20000
+```
+
+Each `<SYMBOL>.json` carries all needed TFs (`5m` + `15m` bias + `1h` regime, HTF
+sized to the same span), BTCUSDT is always included (BTC-regime filter), and
+`manifest.json` records **requested vs received** (and gap counts) per pair/TF.
+The backtest's own real-provider fetches now page deep too (so `--limit` beyond
+500 isn't silently truncated), and `mexc.getKlines` warns once if a single
+>500-row request comes back short.
+
 The negative-expectancy report prints a suggested **`config.disabledSetups`**
 array (setup ids and `id@tf` combos with negative net expectancy).
 

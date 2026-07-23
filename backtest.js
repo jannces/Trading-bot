@@ -54,7 +54,14 @@ async function main() {
   else if (walk && dataDir) { symbolArg = "POOL"; tf = words[0] || "5m"; } // lone word is the TF
   else { symbolArg = (words[0] || "BTCUSDT").toUpperCase(); tf = words[1] || "5m"; }
 
-  const provider = demo ? new MockProvider({ full: true }) : { getKlines: mexc.getKlines, get24hr: mexc.get24hr };
+  // Real provider fetches DEEP (paged via endTime) so --limit beyond MEXC's
+  // ~500/request cap actually works instead of being silently truncated.
+  const realGetKlines = async (sym, t, lim) => {
+    const res = await mexc.getKlinesDeep(sym, t, lim);
+    if (res.received < lim) console.error(`  ${sym} ${t}: requested ${lim}, received ${res.received} (deep fetch; limited history)`);
+    return res.candles;
+  };
+  const provider = demo ? new MockProvider({ full: true }) : { getKlines: realGetKlines, get24hr: mexc.get24hr };
   const htfTf = CONFIG.htf.biasTf;
   const regimeTf = CONFIG.htf.regimeTf;
   const timeframes = matrix ? CONFIG.scanner.timeframes : [tf];
