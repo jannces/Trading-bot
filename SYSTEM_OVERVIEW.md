@@ -247,9 +247,10 @@ Validation flags:
   and whether edge **holds out-of-sample**.
 - `--matrix` — runs all scanner timeframes and prints a **setup × timeframe ×
   tier** net-expectancy table.
-- `--walk` — **walk-forward**: grid-searches {`gate.minAgree`, `gate.minRR`,
-  `scalper.stopCapPct`} on rolling train windows, applies the winner to the next
-  (out-of-sample) window, and aggregates OOS results.
+- `--walk` — **walk-forward**: grid-searches {`gate.minAgree`,
+  `scalper.stopCapPct`, `scalper.expireBars`, `gate.triggerRecencyBars`} on
+  rolling train windows, applies the winner to the next (out-of-sample) window,
+  and aggregates OOS results. See **PARAMS.md** for the 5m default review.
 
 The negative-expectancy report prints a suggested **`config.disabledSetups`**
 array (setup ids and `id@tf` combos with negative net expectancy).

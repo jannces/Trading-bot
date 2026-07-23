@@ -246,15 +246,35 @@ async function runWalkForward(candles, sym, tf, htf, regime) {
   const win = Math.floor(usable / (folds + 1));
   if (win < 40) { console.log("Not enough candles for walk-forward (need more)."); return; }
 
-  const grid = [];
-  for (const minAgree of [6, 7]) for (const minRR of [1.2, 1.5]) for (const capScale of [1.0, 1.5]) grid.push({ minAgree, minRR, capScale });
+  const baseExpire = CONFIG.scalper.expireBars[tf] ?? 10;
+  const baseRecency = CONFIG.gate.triggerRecencyBars;
+  const baseCap = CONFIG.scalper.stopCapPct[tf];
+  const tighterExpire = Math.max(4, Math.round(baseExpire * 0.6));
+  const tighterRecency = Math.max(2, baseRecency - 1);
 
-  const snap = { minAgree: CONFIG.gate.minAgree, minRR: CONFIG.gate.minRR, cap: CONFIG.scalper.stopCapPct[tf] };
-  const baseCap = snap.cap;
+  // Grid: gate.minAgree × gate.minRR × scalper.stopCapPct × scalper.expireBars ×
+  // gate.triggerRecencyBars (kept modest so runtime stays reasonable).
+  const grid = [];
+  for (const minAgree of [6, 7])
+    for (const capScale of [0.75, 1.0, 1.5]) // tighter / base / looser stop cap
+      for (const expireBars of [baseExpire, tighterExpire])
+        for (const recency of [baseRecency, tighterRecency])
+          grid.push({ minAgree, minRR: CONFIG.gate.minRR, capScale, expireBars, recency });
+
+  const snap = {
+    minAgree: CONFIG.gate.minAgree, minRR: CONFIG.gate.minRR, cap: baseCap,
+    expire: baseExpire, recency: baseRecency,
+  };
+  const applyG = (g) => {
+    CONFIG.gate.minAgree = g.minAgree; CONFIG.gate.minRR = g.minRR;
+    CONFIG.scalper.stopCapPct[tf] = baseCap * g.capScale;
+    CONFIG.scalper.expireBars[tf] = g.expireBars;
+    CONFIG.gate.triggerRecencyBars = g.recency;
+  };
   const oosAll = [];
-  console.log(`WALK-FORWARD — ${sym} ${tf} · ${folds} folds · grid ${grid.length} combos (minAgree×minRR×stopCap)\n`);
-  console.log("  fold  train[from:to]  chosen(minAgree,minRR,capScale)  trainNet  testNet(OOS)  nTest");
-  console.log("  " + "-".repeat(78));
+  console.log(`WALK-FORWARD — ${sym} ${tf} · ${folds} folds · grid ${grid.length} combos (minAgree×stopCap×expireBars×recency)\n`);
+  console.log("  fold  train[from:to]  chosen(minAgree,capScale,expire,recency)  trainNet  testNet(OOS)  nTest");
+  console.log("  " + "-".repeat(88));
 
   for (let f = 0; f < folds; f++) {
     const trainFrom = warmup + f * win, trainTo = trainFrom + win;
@@ -262,20 +282,22 @@ async function runWalkForward(candles, sym, tf, htf, regime) {
     // Grid search on the train window.
     let best = null;
     for (const g of grid) {
-      CONFIG.gate.minAgree = g.minAgree; CONFIG.gate.minRR = g.minRR; CONFIG.scalper.stopCapPct[tf] = baseCap * g.capScale;
+      applyG(g);
       const tr = replay(candles, sym, tf, htf, regime, trainFrom, trainTo);
       const exp = mean(tr.map((t) => t.netR));
       const score = tr.length >= 3 ? exp : -Infinity; // ignore too-thin combos
       if (!best || score > best.score) best = { g, score, exp, n: tr.length };
     }
     // Evaluate chosen params out-of-sample.
-    CONFIG.gate.minAgree = best.g.minAgree; CONFIG.gate.minRR = best.g.minRR; CONFIG.scalper.stopCapPct[tf] = baseCap * best.g.capScale;
+    applyG(best.g);
     const oos = replay(candles, sym, tf, htf, regime, testFrom, testTo).map((t) => ({ ...t, fold: f }));
     for (const t of oos) oosAll.push(t);
-    console.log("  " + pad(f, 6) + pad(`${trainFrom}:${trainTo}`, 16) + pad(`(${best.g.minAgree},${best.g.minRR},${best.g.capScale})`, 32) + pad(fmtR(best.exp), 10) + pad(fmtR(mean(oos.map((t) => t.netR))), 13) + oos.length);
+    console.log("  " + pad(f, 6) + pad(`${trainFrom}:${trainTo}`, 16) + pad(`(${best.g.minAgree},${best.g.capScale},${best.g.expireBars},${best.g.recency})`, 42) + pad(fmtR(best.exp), 10) + pad(fmtR(mean(oos.map((t) => t.netR))), 13) + oos.length);
   }
   // Restore config.
-  CONFIG.gate.minAgree = snap.minAgree; CONFIG.gate.minRR = snap.minRR; CONFIG.scalper.stopCapPct[tf] = snap.cap;
+  CONFIG.gate.minAgree = snap.minAgree; CONFIG.gate.minRR = snap.minRR;
+  CONFIG.scalper.stopCapPct[tf] = snap.cap; CONFIG.scalper.expireBars[tf] = snap.expire;
+  CONFIG.gate.triggerRecencyBars = snap.recency;
 
   console.log("\nAGGREGATE OUT-OF-SAMPLE (chosen params per fold):");
   if (oosAll.length) reportGroups({ OOS: oosAll }); else console.log("  no OOS trades.");
