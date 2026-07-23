@@ -1,0 +1,24 @@
+
+Backtest — pooled walk-forward from --data <FIXTURES> · 5m · HTF 15m+1h
+Gate: setup + >=6/10 aligned, no veto, HTF not counter, R:R>=1.2, stop<=cap
+Costs: fees 0.020/0.050%, slip 0.020/0.050%, spread 0.030% -> gross & net R
+
+WALK-FORWARD — 5 pairs pooled 5m
+  candles: 800 (ref) · warm-up: 120 · usable: 680 · train 200/test 100 bars · folds 4 · coverage 100%
+  pooled candles across 5 pairs: 4000
+
+  ⚠ SIZING: ~2.8 trades expected per 100-bar test window (< 20).
+     To reach 20/fold: ~3899 candles per pair, OR pool ~36 pairs via --data <dir>.
+
+  grid 24 combos (minAgree×stopCap×expireBars×recency)
+  fold  chosen(minAgree,capScale,expire,recency)  trainN  trainNet  testN  testNet(OOS)  note
+  ----------------------------------------------------------------------------------------------
+  0     — no selection —                            9       —         0      —             insufficient train trades (9 < 10) — no selection
+  1     — no selection —                            5       —         0      —             insufficient train trades (5 < 10) — no selection
+  2     — no selection —                            3       —         0      —             insufficient train trades (3 < 10) — no selection
+  3     — no selection —                            5       —         0      —             insufficient train trades (5 < 10) — no selection
+
+AGGREGATE OUT-OF-SAMPLE (0/4 folds contributed):
+  no OOS trades from qualifying folds.
+
+Small single-sample study; conservative fills; net = after fees+slippage. Not financial advice.

@@ -248,6 +248,28 @@ same half-off/BE/runner rules **and the shared cost model** (gross + net R).
 **HTF bias uses REAL higher-timeframe klines sliced by time**
 (`htf.htfSliceAtTime`) — identical to the live scanner, not resampled.
 
+**Replay-perf split (`js/confluence.js`).** `evaluate()` is factored into
+`evaluateRaw()` (the expensive, params-**independent** scan — strategies,
+indicators, setup detection, HTF + regime bias, per-setup metrics; depends only
+on candles `[0..i]`) composed with `gateDecision()` (the cheap,
+params-**dependent** gate — `minAgree` / `minRR` / `stopCap`). `evaluate(c,h,m)
+=== gateDecision(evaluateRaw(c,h,m), m)`, so the **live scanner path is
+byte-identical**. The `--walk` grid precomputes `evaluateRaw` **once per bar per
+distinct `triggerRecencyBars`** (the only detection knob it varies) and re-applies
+`gateDecision` across every `minAgree`/`stopCap`/`expireBars` combo and every
+fold — turning an `O(bars × combos × folds)` scan into `O(bars × recencies)`.
+Measured: a 5-pair × 800-candle pooled `--walk` dropped from **~110 s to ~16 s**
+(~7×), byte-for-byte identical output. No new config keys.
+
+Guarding this: **golden regression** (`tests/golden.test.js`) diffs `--matrix`
+and `--walk` on committed fixtures (`tests/golden/fixtures`) against saved
+outputs generated **before** the refactor — a byte-level parity gate that fails
+loudly on any behavior change. `tests/replayperf.test.js` asserts the split's
+three contracts: composition (`evaluate === gateDecision∘evaluateRaw`),
+params-independence of `evaluateRaw`, and empirical **no-look-ahead** (raw at bar
+`i` is invariant to poisoned future candles; the precompute also asserts the
+slice endpoint structurally).
+
 Base runs: `node backtest.js SYMBOL TF CANDLES` | `--scan TF CANDLES` | `--demo`.
 Reports per setup type / per tier / (per pair in `--scan`): n, win rate,
 gross & net expectancy, **profit factor**, and max drawdown in R.
@@ -278,8 +300,8 @@ Validation flags:
   `<SYMBOL>.json` files (`{ "5m": [...], "15m": [...], "1h": [...] }`, raw MEXC
   klines or parsed candles), shares folds **by timestamp**, and pools every
   pair's trades per fold — the way to reach meaningful per-fold trade counts that
-  a single 5m pair never can. (Replay is O(n²) in candles, so keep pools/candle
-  counts modest; a large 50-pair run is a long analysis job.)
+  a single 5m pair never can. The per-bar scan is cached across the grid (see
+  the replay-perf split above), so a pooled `--walk` runs in minutes, not hours.
 
 ### Deep-history fetching (`fetch-data.js`)
 
@@ -315,8 +337,10 @@ array (setup ids and `id@tf` combos with negative net expectancy).
   Lightweight Charts + Advanced widget from CDN.
 - **Key files:** `server.js`, `js/{config,mexc,scanner,confluence,setups,htf,
   indicators,costs,ledgerstore,app,chart,tvwidget,mexcws,mockprovider}.js`,
-  `js/strategies/*`, `backtest.js`, `tests/*` (indicators, setups, mexc, costs,
-  scanner, regime, ledgerstore).
+  `js/{walk,verdict}.js`, `js/strategies/*`, `backtest.js`, `fetch-data.js`,
+  `tests/*` (indicators, setups, mexc, costs, scanner, regime, ledgerstore,
+  timeframes, htflayer, verdict, session, walk, fetchdeep, replayperf, and the
+  `golden` byte-parity regression with committed fixtures).
 - **Config:** everything tunable is in `js/config.js`.
 
 ---

@@ -1,0 +1,32 @@
+
+Backtest — 5M · 5m · 800 candles · HTF 15m+1h (real) · MEXC
+Gate: setup + >=6/10 aligned, no veto, HTF not counter, R:R>=1.2, stop<=cap
+Costs: fees 0.020/0.050%, slip 0.020/0.050%, spread 0.030% -> gross & net R
+
+SETUP × TIMEFRAME × TIER  (net expectancy)
+  setup | tf | tier                 n    win%   netR    PF    maxDD
+  ------------------------------------------------------------------
+  Breakout & Retest | 5m | A        11   64%    +0.62   1.97  -5.25
+  Breakout & Retest | 5m | A+       3    67%    +0.73   2.22  -1.79
+  Breakout & Retest | 5m | B        5    100%   +1.62   ∞     +0.00
+
+BY SETUP TYPE
+  group               n    win%   grossR  netR    PF    maxDD    open
+  ----------------------------------------------------------------------
+  Breakout & Retest   19   74%    +1.32   +0.90   2.94  -5.25    0
+
+BY TIER
+  group               n    win%   grossR  netR    PF    maxDD    open
+  ----------------------------------------------------------------------
+  A+                  3    67%    +1.17   +0.73   2.22  -1.79    0
+  A                   11   64%    +1.07   +0.62   1.97  -5.25    0
+  B                   5    100%   +1.95   +1.62   ∞     +0.00    0
+
+OVERALL
+  group               n    win%   grossR  netR    PF    maxDD    open
+  ----------------------------------------------------------------------
+  ALL                 19   74%    +1.32   +0.90   2.94  -5.25    0
+
+No setup shows negative NET expectancy on this sample.
+
+Small single-sample study; conservative fills; net = after fees+slippage. Not financial advice.

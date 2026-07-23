@@ -18,7 +18,7 @@
 // profit factor, max drawdown, and flags negative-net setups for config.disabledSetups.
 // ============================================================================
 import { CONFIG } from "./js/config.js";
-import { evaluate } from "./js/confluence.js";
+import { evaluate, evaluateRaw, gateDecision } from "./js/confluence.js";
 import { computeR } from "./js/costs.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -124,16 +124,25 @@ async function main() {
   }
 
   const all = [];
-  for (const sym of symbols) {
-    const htf = await fetchHtf(sym, htfTf);
-    const regime = await fetchHtf(sym, regimeTf);
+  if (dataDir) {
+    // Offline: replay from committed --data files (used by matrix/normal too).
     for (const t of timeframes) {
-      let candles;
-      try { candles = await provider.getKlines(sym, t, limit); }
-      catch (e) { if (!scan) throw e; console.error(`  ${sym} ${t}: fetch failed (${e.message})`); continue; }
-      if (!candles || candles.length < CONFIG.backtest.warmup + 30) continue;
-      for (const tr of replay(candles, sym, t, htf, regime)) all.push(tr);
-      if (!demo) await sleep(CONFIG.timing.klineStaggerMs);
+      for (const s of loadDataDir(dataDir, t, htfTf, regimeTf)) {
+        for (const tr of replay(s.candles, s.sym, t, s.htf, s.regime)) all.push(tr);
+      }
+    }
+  } else {
+    for (const sym of symbols) {
+      const htf = await fetchHtf(sym, htfTf);
+      const regime = await fetchHtf(sym, regimeTf);
+      for (const t of timeframes) {
+        let candles;
+        try { candles = await provider.getKlines(sym, t, limit); }
+        catch (e) { if (!scan) throw e; console.error(`  ${sym} ${t}: fetch failed (${e.message})`); continue; }
+        if (!candles || candles.length < CONFIG.backtest.warmup + 30) continue;
+        for (const tr of replay(candles, sym, t, htf, regime)) all.push(tr);
+        if (!demo) await sleep(CONFIG.timing.klineStaggerMs);
+      }
     }
   }
 
@@ -174,6 +183,71 @@ function replay(candles, sym, tf, htf, regime, from, to) {
       symbol: sym, interval: tf, htfInterval: CONFIG.htf.biasTf,
       regimeCandles: regimeSlice, regimeInterval: CONFIG.htf.regimeTf,
     });
+    if (dec.status !== "ACTIVE") continue;
+    const p = dec.plan;
+    const key = `${p.id}:${p.triggerIndex}:${p.direction}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    emitted.push(p);
+  }
+  const trades = [];
+  for (const plan of emitted) {
+    const t = simulateTrade(candles, plan);
+    if (t.filled) trades.push({ pair: sym, tf, setupId: plan.id, setupName: plan.name, tier: plan.tier, posFrac: plan.triggerIndex / candles.length, ...t });
+  }
+  return trades;
+}
+
+// --- Precompute the expensive, params-INDEPENDENT scan once per bar ----------
+// evaluateRaw (strategies + indicators + setup detection + HTF/regime bias) is
+// pure in the candles [0..i] and in the ONE detection knob the grid varies
+// (gate.triggerRecencyBars). We compute it once per (series, recency) and let
+// the grid re-apply the cheap gateDecision() across every minAgree/capScale/
+// expireBars combo and every fold — turning an O(bars × combos × folds) scan
+// into an O(bars × distinctRecencies) one, with identical output.
+//
+// NO LOOK-AHEAD (structural, not just tested): bar i is handed exactly
+// candles.slice(0, i+1); the slice ENDS at candles[i], so evaluateRaw cannot
+// read any future bar. We assert the slice endpoint below so the guarantee
+// can't silently rot.
+function precomputeRaw(series, tf, recency) {
+  const { candles, htf, regime, sym } = series;
+  const warmup = CONFIG.backtest.warmup;
+  const snapRec = CONFIG.gate.triggerRecencyBars;
+  CONFIG.gate.triggerRecencyBars = recency;
+  const rawByBar = new Array(candles.length);
+  try {
+    for (let i = warmup; i < candles.length; i++) {
+      const slice = candles.slice(0, i + 1);
+      // Structural look-ahead guard: the slice must end AT bar i, nothing later.
+      if (slice.length !== i + 1 || slice[slice.length - 1].time !== candles[i].time)
+        throw new Error(`look-ahead guard tripped at bar ${i}: slice does not end at candles[i]`);
+      const htfSlice = htfSliceAtTime(htf, candles[i].time);
+      const regimeSlice = htfSliceAtTime(regime, candles[i].time);
+      rawByBar[i] = evaluateRaw(slice, htfSlice, {
+        symbol: sym, interval: tf, htfInterval: CONFIG.htf.biasTf,
+        regimeCandles: regimeSlice, regimeInterval: CONFIG.htf.regimeTf,
+      });
+    }
+  } finally {
+    CONFIG.gate.triggerRecencyBars = snapRec;
+  }
+  return rawByBar;
+}
+
+// Cheap replay: identical to replay() but re-uses precomputed evaluateRaw and
+// only re-applies gateDecision (which reads the grid's minAgree/capScale). The
+// composition gateDecision(evaluateRaw(...)) IS evaluate(...), so this is
+// byte-for-byte the same as replay() at the same config — the golden guards it.
+function cheapReplay(series, rawByBar, tf, from, to) {
+  const { candles, sym } = series;
+  const warmup = CONFIG.backtest.warmup;
+  from = from ?? warmup;
+  to = to ?? candles.length - 2;
+  const emitted = [];
+  const seen = new Set();
+  for (let i = Math.max(warmup, from); i < to; i++) {
+    const dec = gateDecision(rawByBar[i], { symbol: sym, interval: tf });
     if (dec.status !== "ACTIVE") continue;
     const p = dec.plan;
     const key = `${p.id}:${p.triggerIndex}:${p.direction}`;
@@ -353,15 +427,6 @@ function runWalkForward(seriesList, tf) {
 
   const tAt = (idx) => (idx >= total ? ref.candles[total - 1].time + 1 : ref.candles[idx].time);
 
-  // Sizing sanity from the OBSERVED frequency (full-range pooled replay).
-  const fullTrades = poolReplay(seriesList, tf, tAt(warmup), tAt(total));
-  const tradesPerBar = fold.usable > 0 ? fullTrades.length / fold.usable : 0;
-  const warn = sizingWarning(tradesPerBar, W.testBars, warmup, W.trainBars, W.minTradesPerFoldWarn, pairs);
-  if (warn) {
-    console.log(`\n  ⚠ SIZING: ~${warn.expected.toFixed(1)} trades expected per ${W.testBars}-bar test window (< ${W.minTradesPerFoldWarn}).`);
-    console.log(`     To reach ${W.minTradesPerFoldWarn}/fold: ~${fmtN(warn.neededCandles)} candles per pair, OR pool ~${fmtN(warn.neededPairs)} pairs via --data <dir>.`);
-  }
-
   // Grid.
   const baseExpire = CONFIG.scalper.expireBars[tf] ?? 10;
   const baseRecency = CONFIG.gate.triggerRecencyBars;
@@ -372,6 +437,24 @@ function runWalkForward(seriesList, tf) {
       for (const expireBars of [baseExpire, Math.max(4, Math.round(baseExpire * 0.6))])
         for (const recency of [baseRecency, Math.max(2, baseRecency - 1)])
           grid.push({ minAgree, minRR: CONFIG.gate.minRR, capScale, expireBars, recency });
+
+  // Precompute the expensive scan ONCE per distinct recency (the only detection
+  // knob the grid varies), reused across all combos and folds via gateDecision.
+  const distinctRecencies = [...new Set(grid.map((g) => g.recency))];
+  const rawCache = new Map(); // recency -> array (parallel to seriesList) of rawByBar
+  for (const rec of distinctRecencies) rawCache.set(rec, seriesList.map((s) => precomputeRaw(s, tf, rec)));
+  const rawFor = (recency) => rawCache.get(recency);
+
+  // Sizing sanity from the OBSERVED frequency (full-range pooled replay). Uses
+  // the base recency (== current CONFIG), so it matches the pre-refactor path.
+  const fullTrades = poolCheapReplay(seriesList, rawFor(baseRecency), tf, tAt(warmup), tAt(total));
+  const tradesPerBar = fold.usable > 0 ? fullTrades.length / fold.usable : 0;
+  const warn = sizingWarning(tradesPerBar, W.testBars, warmup, W.trainBars, W.minTradesPerFoldWarn, pairs);
+  if (warn) {
+    console.log(`\n  ⚠ SIZING: ~${warn.expected.toFixed(1)} trades expected per ${W.testBars}-bar test window (< ${W.minTradesPerFoldWarn}).`);
+    console.log(`     To reach ${W.minTradesPerFoldWarn}/fold: ~${fmtN(warn.neededCandles)} candles per pair, OR pool ~${fmtN(warn.neededPairs)} pairs via --data <dir>.`);
+  }
+
   const snap = { minAgree: CONFIG.gate.minAgree, minRR: CONFIG.gate.minRR, cap: baseCap, expire: baseExpire, recency: baseRecency };
   const applyG = (g) => {
     CONFIG.gate.minAgree = g.minAgree; CONFIG.gate.minRR = g.minRR;
@@ -394,7 +477,7 @@ function runWalkForward(seriesList, tf) {
     let maxTrainN = 0;
     for (const g of grid) {
       applyG(g);
-      const tr = poolReplay(seriesList, tf, tTrainFrom, tTrainTo);
+      const tr = poolCheapReplay(seriesList, rawFor(g.recency), tf, tTrainFrom, tTrainTo);
       maxTrainN = Math.max(maxTrainN, tr.length);
       const exp = mean(tr.map((t) => t.netR));
       const score = tr.length >= W.minTrainTrades ? exp : -Infinity;
@@ -404,7 +487,7 @@ function runWalkForward(seriesList, tf) {
     const trainN = selectionMade ? best.n : maxTrainN; // real best-effort count for reporting
     // OOS trades under the chosen params (only if a real selection was made).
     let testTrades = [];
-    if (selectionMade) { applyG(best.g); testTrades = poolReplay(seriesList, tf, tTestFrom, tTestTo); }
+    if (selectionMade) { applyG(best.g); testTrades = poolCheapReplay(seriesList, rawFor(best.g.recency), tf, tTestFrom, tTestTo); }
     const gate = foldSelectable(trainN, testTrades.length, W.minTrainTrades, W.minTestTrades);
 
     if (!gate.selectable) {
@@ -425,13 +508,14 @@ function runWalkForward(seriesList, tf) {
   console.log(`  -> walk-forward OOS net expectancy ${fmtR(e)} over ${oosAll.length} trades ${e > 0 ? "(positive)" : "(non-positive — be skeptical)"}`);
 }
 
-/** Pool replay across series over a TIME range [tFrom, tTo). */
-function poolReplay(seriesList, tf, tFrom, tTo) {
+/** Pool replay over a TIME range using PRECOMPUTED evaluateRaw (cheap gate only). */
+function poolCheapReplay(seriesList, rawArr, tf, tFrom, tTo) {
   const out = [];
-  for (const s of seriesList) {
+  for (let k = 0; k < seriesList.length; k++) {
+    const s = seriesList[k];
     const from = idxAtTime(s.candles, tFrom);
     const to = idxAtTime(s.candles, tTo);
-    if (to > from) for (const tr of replay(s.candles, s.sym, tf, s.htf, s.regime, from, to)) out.push(tr);
+    if (to > from) for (const tr of cheapReplay(s, rawArr[k], tf, from, to)) out.push(tr);
   }
   return out;
 }

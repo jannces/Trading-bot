@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "mock": "MOCK=1 node server.js",
-    "test": "node tests/indicators.test.js && node tests/setups.test.js && node tests/mexc.test.js && node tests/costs.test.js && node tests/scanner.test.js && node tests/regime.test.js && node tests/ledgerstore.test.js && node tests/timeframes.test.js && node tests/htflayer.test.js && node tests/verdict.test.js && node tests/session.test.js && node tests/walk.test.js && node tests/fetchdeep.test.js",
+    "test": "node tests/indicators.test.js && node tests/setups.test.js && node tests/mexc.test.js && node tests/costs.test.js && node tests/scanner.test.js && node tests/regime.test.js && node tests/ledgerstore.test.js && node tests/timeframes.test.js && node tests/htflayer.test.js && node tests/verdict.test.js && node tests/session.test.js && node tests/walk.test.js && node tests/fetchdeep.test.js && node tests/replayperf.test.js && node tests/golden.test.js",
     "backtest": "node backtest.js",
     "backtest:demo": "node backtest.js --demo",
     "export-ledger": "node server.js --export-ledger"

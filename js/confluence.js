@@ -31,7 +31,23 @@ const SETUP_DISPLAY = {
   trend_pullback: "Trend Pullback",
 };
 
+// evaluate = the expensive, params-INDEPENDENT scan (evaluateRaw) composed with
+// the cheap, params-DEPENDENT gate (gateDecision). The live scanner calls
+// evaluate() and is therefore byte-identical to before this split; the backtest
+// caches evaluateRaw per bar and re-applies gateDecision across grid combos.
 export function evaluate(candles, htfCandles, meta = {}) {
+  return gateDecision(evaluateRaw(candles, htfCandles, meta), meta);
+}
+
+/**
+ * Expensive, PARAMS-INDEPENDENT part: strategies, indicators, setup detection,
+ * HTF + regime bias, and each setup's raw metrics. Depends ONLY on the candles
+ * passed in ([0..now] — no look-ahead) plus detection settings
+ * (triggerRecencyBars, disabledSetups); it does NOT read the grid thresholds
+ * (minAgree / minRR / stopCap). The returned object carries no indicator arrays,
+ * so it is cheap to cache per bar and reuse across grid combos and folds.
+ */
+export function evaluateRaw(candles, htfCandles, meta = {}) {
   const results = runAll(candles);
   const ctx = buildContext(candles);
   const disabled = CONFIG.disabledSetups || [];
@@ -45,28 +61,35 @@ export function evaluate(candles, htfCandles, meta = {}) {
   const regime = meta.regimeCandles && meta.regimeCandles.length ? htfBias(meta.regimeCandles) : { bias: "NEUTRAL", strong: false, reason: "no regime data" };
   const regimeMode = (CONFIG.htf && CONFIG.htf.regimeMode) || "off";
   const rctx = { regime, regimeMode, regimeLabel: meta.regimeInterval || "regime" };
+  const setupsMetrics = setups.map((s) => evaluateSetupMetrics(s, results, htf, ctx, rctx));
+  return { setupsMetrics, results, htf, htfLabel, regime, rctx, interval: meta.interval };
+}
 
+/**
+ * Cheap, PARAMS-DEPENDENT part: apply the thresholds to each precomputed setup,
+ * pick the best, build the plan. Identical selection/ordering to the pre-split
+ * evaluate(), so output is byte-for-byte the same.
+ */
+export function gateDecision(raw, meta = {}) {
   const passing = [];
   const forming = [];
-
-  for (const setup of setups) {
-    const e = evaluateSetup(setup, results, htf, ctx, candles, meta.interval, rctx);
-    if (e.pass) passing.push({ setup, ...e });
-    else if (e.forming) forming.push({ setup, ...e });
+  for (const m of raw.setupsMetrics) {
+    const g = setupGate(m, raw.interval, raw.htf, raw.rctx);
+    if (g.pass) passing.push({ ...m, ...g });
+    else if (g.forming) forming.push({ ...m, ...g });
   }
-
   if (passing.length) {
     passing.sort((a, b) => b.alignedCount - a.alignedCount || SETUP_PRIORITY.indexOf(a.setup.id) - SETUP_PRIORITY.indexOf(b.setup.id));
-    const plan = buildPlan(passing[0], htf, htfLabel, meta, results, candles, false, rctx);
-    return { status: "ACTIVE", plan, strategies: results, htf, regime };
+    const plan = buildPlan(passing[0], raw.htf, raw.htfLabel, meta, raw.results, null, false, raw.rctx);
+    return { status: "ACTIVE", plan, strategies: raw.results, htf: raw.htf, regime: raw.regime };
   }
   if (forming.length) {
     forming.sort((a, b) => b.alignedCount - a.alignedCount);
-    const plan = buildPlan(forming[0], htf, htfLabel, meta, results, candles, true, rctx);
+    const plan = buildPlan(forming[0], raw.htf, raw.htfLabel, meta, raw.results, null, true, raw.rctx);
     plan.missing = forming[0].missing;
-    return { status: "FORMING", plan, strategies: results, htf, regime };
+    return { status: "FORMING", plan, strategies: raw.results, htf: raw.htf, regime: raw.regime };
   }
-  return { status: "NONE", strategies: results, htf, regime };
+  return { status: "NONE", strategies: raw.results, htf: raw.htf, regime: raw.regime };
 }
 
 /** Is the regime bias opposite to a setup direction? */
@@ -76,49 +99,44 @@ function regimeOpposes(regime, direction) {
 }
 
 // ---------------------------------------------------------------------------
-function evaluateSetup(setup, results, htf, ctx, candles, interval, rctx) {
+// Params-INDEPENDENT metrics for one setup (no grid thresholds read here).
+function evaluateSetupMetrics(setup, results, htf, ctx, rctx) {
   const wantSignal = setup.direction === "LONG" ? "BUY" : "SELL";
   const oppSignal = setup.direction === "LONG" ? "SELL" : "BUY";
   const aligned = results.filter((r) => r.signal === wantSignal);
   const alignedCount = aligned.length;
-
   const veto = CONFIG.gate.vetoStrategies.find((k) => {
     const r = results.find((x) => x.key === k);
     return r && r.signal === oppSignal;
   });
-
   const need = biasForDirection(setup.direction);
   const counter = need === "BULL" ? htf.bias === "BEAR" : htf.bias === "BULL";
   const htfAligned = htf.bias === need;
-
   const R = Math.abs(setup.entryPrice - setup.stop);
   const room = roomToStructure(setup, ctx);
-  const rrRoomOk = R > 0 && room >= CONFIG.gate.minRR * R;
-
-  // Scalper guardrail: stop distance as a % of entry.
   const stopPct = setup.entryPrice > 0 ? (R / setup.entryPrice) * 100 : Infinity;
-  const cap = CONFIG.scalper.stopCapPct[interval] ?? Infinity;
-  const stopOk = stopPct <= cap;
-
-  // Regime layer (config.htf.regimeTf): opposing structure vetoes or downgrades.
   const regimeCounter = rctx ? regimeOpposes(rctx.regime, setup.direction) : false;
+  return { setup, aligned, alignedCount, veto, counter, htfAligned, htfStrong: htf.strong, R, room, stopPct, regimeCounter };
+}
 
-  // Hard rejections (disqualify even from FORMING).
+// Params-DEPENDENT gate for one setup (the thresholds that the grid varies).
+function setupGate(m, interval, htf, rctx) {
+  const rrRoomOk = m.R > 0 && m.room >= CONFIG.gate.minRR * m.R;
+  const cap = CONFIG.scalper.stopCapPct[interval] ?? Infinity;
+  const stopOk = m.stopPct <= cap;
+
   const hard = [];
-  if (veto) hard.push(`${veto.toUpperCase()} contradicts`);
-  if (CONFIG.gate.requireHtfAlignment && counter) hard.push(`counter to ${htf.reason}`);
-  if (rctx && rctx.regimeMode === "veto" && regimeCounter) hard.push(`counter to ${rctx.regimeLabel} regime (${rctx.regime.reason})`);
+  if (m.veto) hard.push(`${m.veto.toUpperCase()} contradicts`);
+  if (CONFIG.gate.requireHtfAlignment && m.counter) hard.push(`counter to ${htf.reason}`);
+  if (rctx && rctx.regimeMode === "veto" && m.regimeCounter) hard.push(`counter to ${rctx.regimeLabel} regime (${rctx.regime.reason})`);
   if (!rrRoomOk) hard.push(`R:R to TP1 < ${CONFIG.gate.minRR}`);
-  if (!stopOk) hard.push(`stop ${stopPct.toFixed(2)}% > ${cap}% cap`);
+  if (!stopOk) hard.push(`stop ${m.stopPct.toFixed(2)}% > ${cap}% cap`);
 
-  const enough = alignedCount >= CONFIG.gate.minAgree;
+  const enough = m.alignedCount >= CONFIG.gate.minAgree;
   const pass = enough && hard.length === 0;
-
-  // FORMING: no hard reject, only short on confirmations (within slack).
-  const forming = !pass && hard.length === 0 && alignedCount >= CONFIG.gate.minAgree - CONFIG.gate.formingSlack;
-  const missing = forming ? [`needs ${CONFIG.gate.minAgree - alignedCount} more confirmation(s)`] : hard;
-
-  return { pass, forming, alignedCount, aligned, htfAligned, htfStrong: htf.strong, stopPct, missing, regimeCounter };
+  const forming = !pass && hard.length === 0 && m.alignedCount >= CONFIG.gate.minAgree - CONFIG.gate.formingSlack;
+  const missing = forming ? [`needs ${CONFIG.gate.minAgree - m.alignedCount} more confirmation(s)`] : hard;
+  return { pass, forming, missing };
 }
 
 function roomToStructure(setup, ctx) {
