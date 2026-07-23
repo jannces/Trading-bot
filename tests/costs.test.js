@@ -6,7 +6,7 @@
 // equals gross, (3) net values match hand-computed numbers for a fixed plan and
 // cost spec (long AND short), (4) net is strictly worse than gross with costs.
 // ============================================================================
-import { computeR } from "../js/costs.js";
+import { computeR, costPct, costsInR } from "../js/costs.js";
 
 let passed = 0, failed = 0;
 const approx = (a, b, tol, l) => {
@@ -59,6 +59,35 @@ for (const plan of [longPlan, shortPlan]) {
 // Short symmetry: stopped gross is still -1.
 approx(computeR(shortPlan, "stopped", COST).grossR, -1, 1e-9, "short stopped gross = -1R");
 ok(computeR(shortPlan, "stopped", COST).netR < -1, "short stopped net worse than -1R");
+
+// --- costs_in_R = costPct / stopFrac, and it IS the stopped-path floor -------
+console.log("costs_in_R conversion");
+{
+  // COST round-trip = entrySlip + (stopSlip+spread) + makerFee + takerFee
+  //                 = 0.0002 + (0.0005+0.0003) + 0.0002 + 0.0005 = 0.0017 (0.17%).
+  approx(costPct(COST), 0.0017, 1e-12, "costPct = 0.17% round-trip");
+
+  // longPlan stop = 0.6% of entry -> costs_in_R = 0.17%/0.6% ≈ 0.283.
+  const cir = costsInR(longPlan, COST);
+  approx(cir, 0.0017 / 0.006, 1e-9, "costs_in_R = costPct / stopFrac");
+  // The stopped-path net IS -(1 + costs_in_R) within the price-approximation tol.
+  const stopFloor = computeR(longPlan, "stopped", COST).netR;
+  approx(stopFloor, -(1 + cir), 0.02, "stopped net ≈ -(1 + costs_in_R)");
+  ok(stopFloor >= -(1 + cir) - 0.02, "net never below -(1+costs_in_R)");
+}
+
+// --- MICRO-STOP confirmation: -2.9R is real, not a conversion bug -----------
+console.log("micro-stop -> costs dominate (the real -2.9R)");
+{
+  // A 0.065%-of-entry stop, like the reported real data.
+  const micro = { direction: "LONG", entryPrice: 100, stop: 100 * (1 - 0.00065), tp1: 100.1, tp2: 100.2 };
+  const cir = costsInR(micro, COST);
+  approx(cir, 0.0017 / 0.00065, 1e-6, "costs_in_R ≈ 2.6 at a 0.065% stop");
+  const net = computeR(micro, "stopped", COST).netR;
+  ok(net < -3 && net > -4, `stopped net ≈ -${(1 + cir).toFixed(2)}R (got ${net.toFixed(2)}) — real micro-stop, not a unit bug`);
+  // Sanity: at a healthy 0.6% stop the same costs are only ~0.28R.
+  ok(costsInR(longPlan, COST) < 0.4, "same costs at a 0.6% stop are a minor drag");
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

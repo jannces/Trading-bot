@@ -104,6 +104,14 @@ export const CONFIG = {
   scalper: {
     stopCapPct: { "1m": 0.6, "5m": 1.2, "15m": 2.0 }, // max stop distance (%)
     expireBars: { "1m": 10, "5m": 10, "15m": 12 }, // no fill within N bars -> expired
+    // Stop FLOOR (applied in confluence.js buildPlan): effective risk R =
+    // max(structure stop, stopFloorK × ATR(14) at trigger, stopFloorM × spread).
+    // Micro-stops (e.g. 0.06% of price) make round-trip costs dominate R
+    // (costs_in_R = costPct / stopPct); the floor widens tiny stops so costs stay
+    // a sane fraction of R. Set both to 0 to disable. The --walk grid A/Bs
+    // {off} vs {these values}.
+    stopFloorK: 0.5, // × ATR(14) on the entry timeframe
+    stopFloorM: 3,   // × modeled spread (costs.spreadPct × price)
   },
 
   // -- Realistic cost model (fractions of price; 0.0005 = 0.05%) -------------

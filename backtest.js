@@ -19,7 +19,7 @@
 // ============================================================================
 import { CONFIG } from "./js/config.js";
 import { evaluate, evaluateRaw, gateDecision } from "./js/confluence.js";
-import { computeR } from "./js/costs.js";
+import { computeR, costPct } from "./js/costs.js";
 import fs from "node:fs";
 import path from "node:path";
 import { htfSliceAtTime, intervalMinutes } from "./js/htf.js";
@@ -77,10 +77,15 @@ async function main() {
     symbols = [demo ? "BTCUSDT" : symbolArg];
   }
 
-  if (!(walk && dataDir)) {
-    console.log(`\nBacktest — ${scan ? `SCAN top-${symbols.length}` : symbols[0]} · ${timeframes.join("/")} · ${limit} candles · HTF ${htfTf}+${regimeTf} (real) · ${demo ? "synthetic demo" : "MEXC"}`);
-  } else {
+  if (walk && dataDir) {
     console.log(`\nBacktest — pooled walk-forward from --data ${dataDir} · ${tf} · HTF ${htfTf}+${regimeTf}`);
+  } else if (dataDir) {
+    // Pooled --matrix/normal from --data: report the real pool, not the CLI
+    // symbol/limit (which are placeholders in --data mode).
+    const st = dataDirStats(dataDir, timeframes[0]);
+    console.log(`\nBacktest — ${st.pairs} pairs pooled · ${timeframes.join("/")} · ${st.candles} candles (${timeframes[0]}) · HTF ${htfTf}+${regimeTf} · --data ${dataDir}`);
+  } else {
+    console.log(`\nBacktest — ${scan ? `SCAN top-${symbols.length}` : symbols[0]} · ${timeframes.join("/")} · ${limit} candles · HTF ${htfTf}+${regimeTf} (real) · ${demo ? "synthetic demo" : "MEXC"}`);
   }
   console.log(`Gate: setup + >=${CONFIG.gate.minAgree}/10 aligned, no veto, HTF not counter, R:R>=${CONFIG.gate.minRR}, stop<=cap`);
   const c = CONFIG.costs;
@@ -162,6 +167,8 @@ async function main() {
     console.log("SETUP × TIMEFRAME × TIER  (net expectancy)");
     reportMatrix(all);
     console.log("");
+    reportStopAudit(all);
+    console.log("");
   }
   console.log("BY SETUP TYPE"); reportGroups(groupBy(all, (t) => t.setupName));
   console.log("\nBY TIER"); reportGroups(groupBy(all, (t) => t.tier), ["A+", "A", "B"]);
@@ -198,6 +205,8 @@ function summarizeTrades(all, mode, tf, timeframes) {
     byTier: grp((t) => t.tier),
     byMatrix: grp((t) => `${t.setupName} | ${t.tf} | ${t.tier}`),
     overall: stats(all),
+    costPct: costPct(CONFIG.costs),
+    stopAudit: stopAuditData(all),
     // Mirrors reportNegative: setups with negative mean net; combos need n>=5.
     negSetups: Object.entries(bySetupNet).filter(([, ts]) => mean(ts.map((t) => t.netR)) < 0).map(([id]) => id),
     negCombos: Object.entries(byComboNet).filter(([, ts]) => mean(ts.map((t) => t.netR)) < 0 && ts.length >= 5).map(([k]) => k),
@@ -234,7 +243,7 @@ function replay(candles, sym, tf, htf, regime, from, to) {
   const trades = [];
   for (const plan of emitted) {
     const t = simulateTrade(candles, plan);
-    if (t.filled) trades.push({ pair: sym, tf, setupId: plan.id, setupName: plan.name, tier: plan.tier, posFrac: plan.triggerIndex / candles.length, ...t });
+    if (t.filled) trades.push({ pair: sym, tf, setupId: plan.id, setupName: plan.name, tier: plan.tier, stopPct: plan.stopPct, structStopPct: plan.structStopPct, floored: plan.stopFloored, posFrac: plan.triggerIndex / candles.length, ...t });
   }
   return trades;
 }
@@ -304,7 +313,7 @@ function cheapReplay(series, rawByBar, tf, from, to) {
   const trades = [];
   for (const plan of emitted) {
     const t = simulateTrade(candles, plan);
-    if (t.filled) trades.push({ pair: sym, tf, setupId: plan.id, setupName: plan.name, tier: plan.tier, posFrac: plan.triggerIndex / candles.length, ...t });
+    if (t.filled) trades.push({ pair: sym, tf, setupId: plan.id, setupName: plan.name, tier: plan.tier, stopPct: plan.stopPct, structStopPct: plan.structStopPct, floored: plan.stopFloored, posFrac: plan.triggerIndex / candles.length, ...t });
   }
   return trades;
 }
@@ -374,6 +383,44 @@ function reportMatrix(all) {
     const s = stats(groups[k]);
     console.log("  " + pad(k, 34) + pad(s.n, 5) + pad(fmtPct(s.winRate), 7) + pad(fmtR(s.netAvg), 8) + pad(fmtPF(s.pf), 6) + fmtR(-s.maxDD));
   }
+}
+
+// Stop-distance distribution per setup — the diagnostic for cost-dominated net R.
+// costs_in_R ≈ round-trip-cost% / stop%, so a p50 stop of ~0.06% against a ~0.17%
+// cost means ~2.9R bled to costs on a stop-out. `floored` counts trades whose
+// structure stop was widened by the stop floor (scalper.stopFloorK/M).
+function reportStopAudit(all) {
+  const cp = costPct(CONFIG.costs) * 100; // round-trip cost as % of price
+  console.log(`STOP-DISTANCE AUDIT (stop % of entry; round-trip cost ≈ ${cp.toFixed(3)}% -> costs_in_R ≈ cost%/stop%)`);
+  console.log("  " + pad("setup", 20) + pad("n", 6) + pad("p10%", 8) + pad("p50%", 8) + pad("p90%", 8) + pad("costR@p50", 11) + "floored");
+  console.log("  " + "-".repeat(68));
+  const groups = groupBy(all, (t) => t.setupName);
+  for (const k of Object.keys(groups)) {
+    const ts = groups[k];
+    const sp = ts.map((t) => t.stopPct).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+    if (!sp.length) continue;
+    const p50 = pctile(sp, 0.5);
+    const costR = p50 > 0 ? cp / p50 : Infinity;
+    const nFloor = ts.filter((t) => t.floored).length;
+    console.log("  " + pad(k, 20) + pad(ts.length, 6) + pad(pctile(sp, 0.1).toFixed(3), 8) + pad(p50.toFixed(3), 8) + pad(pctile(sp, 0.9).toFixed(3), 8) + pad(fmtR(costR), 11) + `${nFloor}/${ts.length}`);
+  }
+}
+/** Nearest-rank percentile of an ASCENDING-sorted array. */
+function pctile(sortedAsc, q) {
+  if (!sortedAsc.length) return NaN;
+  return sortedAsc[Math.min(sortedAsc.length - 1, Math.max(0, Math.round(q * (sortedAsc.length - 1))))];
+}
+/** Per-setup stop-distance percentiles + floored count for the JSON summary. */
+function stopAuditData(all) {
+  const out = {};
+  const groups = groupBy(all, (t) => t.setupId);
+  for (const k of Object.keys(groups)) {
+    const ts = groups[k];
+    const sp = ts.map((t) => t.stopPct).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+    if (!sp.length) continue;
+    out[k] = { n: sp.length, p10: pctile(sp, 0.1), p50: pctile(sp, 0.5), p90: pctile(sp, 0.9), floored: ts.filter((t) => t.floored).length };
+  }
+  return out;
 }
 function reportSplit(all, frac) {
   const is = all.filter((t) => t.posFrac < frac);
@@ -502,12 +549,19 @@ function runWalkForward(seriesList, tf) {
   const baseExpire = CONFIG.scalper.expireBars[tf] ?? 10;
   const baseRecency = CONFIG.gate.triggerRecencyBars;
   const baseCap = CONFIG.scalper.stopCapPct[tf];
+  const baseFloorK = CONFIG.scalper.stopFloorK || 0;
+  const baseFloorM = CONFIG.scalper.stopFloorM || 0;
+  // Stop floor A/B: OFF (structure stop as-is) vs the configured floor. When the
+  // config floor is 0 the two collapse to one (deduped) — no wasted combos.
+  const floorOpts = [{ floorK: 0, floorM: 0 }];
+  if (baseFloorK > 0 || baseFloorM > 0) floorOpts.push({ floorK: baseFloorK, floorM: baseFloorM });
   const grid = [];
   for (const minAgree of [6, 7])
     for (const capScale of [0.75, 1.0, 1.5])
       for (const expireBars of [baseExpire, Math.max(4, Math.round(baseExpire * 0.6))])
         for (const recency of [baseRecency, Math.max(2, baseRecency - 1)])
-          grid.push({ minAgree, minRR: CONFIG.gate.minRR, capScale, expireBars, recency });
+          for (const fl of floorOpts)
+            grid.push({ minAgree, minRR: CONFIG.gate.minRR, capScale, expireBars, recency, floorK: fl.floorK, floorM: fl.floorM });
 
   // Precompute the expensive scan ONCE per distinct recency (the only detection
   // knob the grid varies), reused across all combos and folds via gateDecision.
@@ -529,17 +583,19 @@ function runWalkForward(seriesList, tf) {
     console.log(`     To reach ${W.minTradesPerFoldWarn}/fold: ~${fmtN(warn.neededCandles)} candles per pair, OR pool ~${fmtN(warn.neededPairs)} pairs via --data <dir>.`);
   }
 
-  const snap = { minAgree: CONFIG.gate.minAgree, minRR: CONFIG.gate.minRR, cap: baseCap, expire: baseExpire, recency: baseRecency };
+  const snap = { minAgree: CONFIG.gate.minAgree, minRR: CONFIG.gate.minRR, cap: baseCap, expire: baseExpire, recency: baseRecency, floorK: baseFloorK, floorM: baseFloorM };
   const applyG = (g) => {
     CONFIG.gate.minAgree = g.minAgree; CONFIG.gate.minRR = g.minRR;
     CONFIG.scalper.stopCapPct[tf] = baseCap * g.capScale;
     CONFIG.scalper.expireBars[tf] = g.expireBars;
     CONFIG.gate.triggerRecencyBars = g.recency;
+    CONFIG.scalper.stopFloorK = g.floorK; CONFIG.scalper.stopFloorM = g.floorM;
   };
 
-  console.log(`\n  grid ${grid.length} combos (minAgree×stopCap×expireBars×recency)`);
-  console.log("  fold  chosen(minAgree,capScale,expire,recency)  trainN  trainNet  testN  testNet(OOS)  note");
-  console.log("  " + "-".repeat(94));
+  const floorDim = floorOpts.length > 1 ? "×floor" : "";
+  console.log(`\n  grid ${grid.length} combos (minAgree×stopCap×expireBars×recency${floorDim})`);
+  console.log("  fold  chosen(minAgree,capScale,expire,recency,floorK/M)  trainN  trainNet  testN  testNet(OOS)  note");
+  console.log("  " + "-".repeat(100));
 
   const oosAll = [];
   const foldRows = [];
@@ -566,7 +622,7 @@ function runWalkForward(seriesList, tf) {
     const gate = foldSelectable(trainN, testTrades.length, W.minTrainTrades, W.minTestTrades);
 
     if (!gate.selectable) {
-      console.log("  " + pad(F.index, 6) + pad("— no selection —", 44) + pad(trainN, 8) + pad("—", 10) + pad(0, 7) + pad("—", 14) + gate.reason);
+      console.log("  " + pad(F.index, 6) + pad("— no selection —", 50) + pad(trainN, 8) + pad("—", 10) + pad(0, 7) + pad("—", 14) + gate.reason);
       foldRows.push({ index: F.index, selectable: false, reason: gate.reason, trainN, testN: 0, included: false });
       continue;
     }
@@ -576,12 +632,13 @@ function runWalkForward(seriesList, tf) {
       testN: testTrades.length, testNet: mean(testTrades.map((t) => t.netR)),
       included: gate.includeTest, reason: gate.includeTest ? null : gate.reason,
     });
-    console.log("  " + pad(F.index, 6) + pad(`(${best.g.minAgree},${best.g.capScale},${best.g.expireBars},${best.g.recency})`, 44) + pad(trainN, 8) + pad(fmtR(best.exp), 10) + pad(testTrades.length, 7) + pad(fmtR(mean(testTrades.map((t) => t.netR))), 14) + (gate.includeTest ? "" : gate.reason));
+    console.log("  " + pad(F.index, 6) + pad(`(${best.g.minAgree},${best.g.capScale},${best.g.expireBars},${best.g.recency},${best.g.floorK}/${best.g.floorM})`, 50) + pad(trainN, 8) + pad(fmtR(best.exp), 10) + pad(testTrades.length, 7) + pad(fmtR(mean(testTrades.map((t) => t.netR))), 14) + (gate.includeTest ? "" : gate.reason));
   }
   // Restore config.
   CONFIG.gate.minAgree = snap.minAgree; CONFIG.gate.minRR = snap.minRR;
   CONFIG.scalper.stopCapPct[tf] = snap.cap; CONFIG.scalper.expireBars[tf] = snap.expire;
   CONFIG.gate.triggerRecencyBars = snap.recency;
+  CONFIG.scalper.stopFloorK = snap.floorK; CONFIG.scalper.stopFloorM = snap.floorM;
 
   // Params chosen by the folds that actually contributed OOS trades — the only
   // ones Stage 4 may adopt (and only if the aggregate OOS is sound).
@@ -632,6 +689,12 @@ function loadDataDir(dir, tf, htfTf, regimeTf) {
     }
   }
   return series;
+}
+
+/** Cheap pool stats for the banner: pair count + total candles at `tf`. */
+function dataDirStats(dir, tf) {
+  const s = loadDataDir(dir, tf, CONFIG.htf.biasTf, CONFIG.htf.regimeTf);
+  return { pairs: s.length, candles: s.reduce((n, x) => n + x.candles.length, 0) };
 }
 
 // --- helpers ---------------------------------------------------------------

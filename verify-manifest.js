@@ -12,6 +12,7 @@
 // ============================================================================
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { intervalMinutes } from "./js/htf.js";
 
 const COMPLETE = 0.95; // received/expected below this (for the pair's OWN span) is "short"
@@ -102,4 +103,8 @@ function main() {
   console.log(`\n✓ All ${provenance.length} series complete for their span (≥ ${(COMPLETE * 100).toFixed(0)}%, 0 gaps).`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+function isRunDirectly() {
+  try { return process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url); }
+  catch { return false; }
+}
+if (isRunDirectly()) main();

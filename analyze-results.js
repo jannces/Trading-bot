@@ -20,6 +20,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+// Robust "is this file being run directly?" — the naive
+// `import.meta.url === "file://" + process.argv[1]` check silently fails (script
+// does nothing, exits 0) when the two paths differ by URL-encoding, a symlink, or
+// a relative invocation. Compare real filesystem paths instead.
+function isRunDirectly() {
+  try { return process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url); }
+  catch { return false; }
+}
 import { CONFIG } from "./js/config.js";
 
 // ---- load -----------------------------------------------------------------
@@ -176,6 +185,22 @@ export function renderMarkdown(analysis, run) {
     L.push("");
     L.push(`Overall: n ${run.matrix.overall?.n ?? 0}, net ${R(run.matrix.overall?.netAvg)}, PF ${pf(run.matrix.overall?.pf)}.`);
     L.push("");
+
+    // Stop-distance audit — the cost-vs-stop diagnostic.
+    if (run.matrix.stopAudit && Object.keys(run.matrix.stopAudit).length) {
+      const cp = (run.matrix.costPct ?? 0) * 100;
+      L.push(`### Stop-distance audit`);
+      L.push("");
+      L.push(`Round-trip modeled cost ≈ **${cp.toFixed(3)}%** of price. \`costs_in_R ≈ cost% / stop%\` — a stop far below the cost bleeds most of its R to fees/slippage on a loss.`);
+      L.push("");
+      L.push("| setup | n | p10% | p50% | p90% | costs_in_R @ p50 | floored |");
+      L.push("|---|--:|--:|--:|--:|--:|--:|");
+      for (const [id, a] of Object.entries(run.matrix.stopAudit)) {
+        const cir = a.p50 > 0 ? cp / a.p50 : Infinity;
+        L.push(`| ${id} | ${a.n} | ${a.p10?.toFixed(3)} | ${a.p50?.toFixed(3)} | ${a.p90?.toFixed(3)} | ${R(cir)} | ${a.floored}/${a.n} |`);
+      }
+      L.push("");
+    }
   }
 
   // Walk-forward.
@@ -302,4 +327,4 @@ function main() {
   console.log("\n" + bottomLine(analysis, run).replace(/\*\*/g, ""));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (isRunDirectly()) main();

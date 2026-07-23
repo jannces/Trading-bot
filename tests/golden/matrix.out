@@ -1,5 +1,5 @@
 
-Backtest — 5M · 5m · 800 candles · HTF 15m+1h (real) · MEXC
+Backtest — 5 pairs pooled · 5m · 4000 candles (5m) · HTF 15m+1h · --data <FIXTURES>
 Gate: setup + >=6/10 aligned, no veto, HTF not counter, R:R>=1.2, stop<=cap
 Costs: fees 0.020/0.050%, slip 0.020/0.050%, spread 0.030% -> gross & net R
 
@@ -9,6 +9,11 @@ SETUP × TIMEFRAME × TIER  (net expectancy)
   Breakout & Retest | 5m | A        13   62%    +0.41   1.61  -5.25
   Breakout & Retest | 5m | A+       3    67%    +0.73   2.22  -1.79
   Breakout & Retest | 5m | B        5    80%    +1.26   4.76  -1.68
+
+STOP-DISTANCE AUDIT (stop % of entry; round-trip cost ≈ 0.170% -> costs_in_R ≈ cost%/stop%)
+  setup               n     p10%    p50%    p90%    costR@p50  floored
+  --------------------------------------------------------------------
+  Breakout & Retest   21    0.211   0.230   0.250   +0.74      0/21
 
 BY SETUP TYPE
   group               n    win%   grossR  netR    PF    maxDD    open

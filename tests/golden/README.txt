@@ -19,6 +19,14 @@ behavior change; investigate it. They have been regenerated ONCE deliberately:
      "no selection" — the 800-candle fixture is too small to clear minTrainTrades).
      These matrix.out/walk.out were regenerated from the WINDOWED path and are the
      new reference.
+  3. stop floor + stop-distance audit — trade STATS unchanged on these fixtures
+     (their structure stops already exceed the floor, so 0/21 trades are floored
+     and buildPlan produces identical levels). The regen is purely additive
+     output: --matrix gains a STOP-DISTANCE AUDIT section and the corrected pooled
+     header ("N pairs pooled · <candles>"); --walk's grid grows 24 -> 48 (the
+     floor A/B dimension) and the chosen-params column gains floorK/M. Net R / PF /
+     selections are byte-identical to (2) apart from those additions — confirmed by
+     diff before regenerating.
 
 fixtures: 5 pairs x 800 5m candles (+ resampled 15m/1h), deterministic
 (mulberry32 seeded by symbol). Parity is size-independent, so 800 fully exercises

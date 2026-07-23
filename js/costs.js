@@ -84,3 +84,28 @@ function core(plan, path, c) {
 export function computeR(plan, path, costs = CONFIG.costs) {
   return { grossR: core(plan, path, ZERO), netR: core(plan, path, costs || ZERO) };
 }
+
+/**
+ * Round-trip cost as a FRACTION of entry price: entry (maker fee + entry
+ * slippage) + exit (taker fee + stop slippage + spread). This is the numerator
+ * of "costs in R".
+ */
+export function costPct(costs = CONFIG.costs) {
+  const c = costs || ZERO;
+  const eS = c.slippage?.entryPct || 0;
+  const exitSlip = (c.slippage?.stopPct || 0) + (c.spreadPct || 0);
+  const fM = c.fees?.makerPct || 0;
+  const fT = c.fees?.takerPct || 0;
+  return eS + exitSlip + fM + fT;
+}
+
+/**
+ * Costs expressed as a MULTIPLE of the planned risk R0 = |entry − stop|.
+ * costs_in_R = costPct / stopFrac, where stopFrac = R0 / entryPrice. A trade can
+ * never net worse than −(1 + costs_in_R) (the stopped-path floor), so tiny stops
+ * (small stopFrac) make costs dominate — the reason micro-stops bleed net R.
+ */
+export function costsInR(plan, costs = CONFIG.costs) {
+  const stopFrac = plan.entryPrice > 0 ? Math.abs(plan.entryPrice - plan.stop) / plan.entryPrice : 0;
+  return stopFrac > 0 ? costPct(costs) / stopFrac : Infinity;
+}

@@ -10,13 +10,13 @@ WALK-FORWARD — 5 pairs pooled 5m
   ⚠ SIZING: ~3.1 trades expected per 100-bar test window (< 20).
      To reach 20/fold: ~3559 candles per pair, OR pool ~33 pairs via --data <dir>.
 
-  grid 24 combos (minAgree×stopCap×expireBars×recency)
-  fold  chosen(minAgree,capScale,expire,recency)  trainN  trainNet  testN  testNet(OOS)  note
-  ----------------------------------------------------------------------------------------------
-  0     — no selection —                            8       —         0      —             insufficient train trades (8 < 10) — no selection
-  1     — no selection —                            4       —         0      —             insufficient train trades (4 < 10) — no selection
-  2     — no selection —                            3       —         0      —             insufficient train trades (3 < 10) — no selection
-  3     — no selection —                            6       —         0      —             insufficient train trades (6 < 10) — no selection
+  grid 48 combos (minAgree×stopCap×expireBars×recency×floor)
+  fold  chosen(minAgree,capScale,expire,recency,floorK/M)  trainN  trainNet  testN  testNet(OOS)  note
+  ----------------------------------------------------------------------------------------------------
+  0     — no selection —                                  8       —         0      —             insufficient train trades (8 < 10) — no selection
+  1     — no selection —                                  4       —         0      —             insufficient train trades (4 < 10) — no selection
+  2     — no selection —                                  3       —         0      —             insufficient train trades (3 < 10) — no selection
+  3     — no selection —                                  6       —         0      —             insufficient train trades (6 < 10) — no selection
 
 AGGREGATE OUT-OF-SAMPLE (0/4 folds contributed):
   no OOS trades from qualifying folds.

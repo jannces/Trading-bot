@@ -163,6 +163,16 @@ A signal **LOCKS** only when ALL hold (all thresholds in `js/config.js`):
 5. **scalper guardrail:** stop distance ≤ `scalper.stopCapPct[tf]`
    (0.6% on 1m, 1.2% on 5m).
 
+**Stop FLOOR (`scalper.stopFloorK/M`).** Effective risk `R = max(structure stop,
+stopFloorK × ATR(14) at the trigger, stopFloorM × modeled spread)`; stop and
+TP1/TP2 are recomputed from `R` (the entry fill zone is the structural trigger
+band, unchanged). Rationale: costs in R are `costPct / stopPct`, so a micro-stop
+(real data showed a ~0.065%-of-price median stop against a ~0.17% round-trip cost)
+bleeds ~2.9R to fees/slippage on a loss. The floor widens tiny stops so costs stay
+a sane fraction of R; a setup whose structure stop is below the floor still trades,
+with the floored stop. Defaults `k=0.5`, `m=3`; set both to 0 to disable. The
+`--walk` grid A/Bs off vs on.
+
 Outputs per signal: **tier** (A+ ≥8 aligned & HTF strong; A ≥7; B ≥6), a
 **0–100 score** (blend of setup strength, avg aligned-strategy strength, aligned
 count, HTF), **named contributors** with individual scores, a plain-language
@@ -297,8 +307,13 @@ Validation flags:
   "disable both"). A setup needs ≥ `backtest.minTradesForVerdict` (default 50)
   trades on a TF or its side is **"insufficient data"** — never a recommendation
   on a thin sample.
+- `--matrix` also prints a **STOP-DISTANCE AUDIT**: per-setup p10/p50/p90 of the
+  stop as a % of entry, the round-trip `costPct`, and `costs_in_R @ p50` (=
+  `costPct% / p50%`) — the diagnostic that surfaced the micro-stop / cost-drag
+  problem — plus how many trades the stop floor widened.
 - `--walk` — **walk-forward**: grid-searches {`gate.minAgree`,
-  `scalper.stopCapPct`, `scalper.expireBars`, `gate.triggerRecencyBars`} on
+  `scalper.stopCapPct`, `scalper.expireBars`, `gate.triggerRecencyBars`,
+  **`scalper.stopFloorK/M` (off vs on)**} on
   rolling train windows, applies the winner to the next (out-of-sample) window,
   and aggregates OOS results. **Fold count/coverage are derived from the candles
   actually available** (`js/walk.js`, `backtest.walk.{trainBars,testBars}`) and

@@ -21,7 +21,7 @@ import { runAll } from "./strategies/index.js";
 import { buildContext, detectSetups } from "./setups.js";
 import { htfBias, biasForDirection } from "./htf.js";
 import { pivotHighs, pivotLows } from "./indicators.js";
-import { computeR } from "./costs.js";
+import { computeR, costsInR } from "./costs.js";
 
 const SETUP_PRIORITY = ["sweep_reverse", "divergence_reversal", "breakout_retest", "trend_pullback"];
 const SETUP_DISPLAY = {
@@ -116,7 +116,10 @@ function evaluateSetupMetrics(setup, results, htf, ctx, rctx) {
   const room = roomToStructure(setup, ctx);
   const stopPct = setup.entryPrice > 0 ? (R / setup.entryPrice) * 100 : Infinity;
   const regimeCounter = rctx ? regimeOpposes(rctx.regime, setup.direction) : false;
-  return { setup, aligned, alignedCount, veto, counter, htfAligned, htfStrong: htf.strong, R, room, stopPct, regimeCounter };
+  // ATR(14) at the TRIGGER bar (params-independent; used by the stop floor in
+  // buildPlan). Depends only on candles[0..trigger] — no look-ahead.
+  const atrAtTrigger = Number.isFinite(ctx.atrSeries?.[setup.triggerIndex]) ? ctx.atrSeries[setup.triggerIndex] : setup.entryPrice * 0.005;
+  return { setup, aligned, alignedCount, veto, counter, htfAligned, htfStrong: htf.strong, R, room, stopPct, regimeCounter, atrAtTrigger };
 }
 
 // Params-DEPENDENT gate for one setup (the thresholds that the grid varies).
@@ -151,8 +154,19 @@ function roomToStructure(setup, ctx) {
 // ---------------------------------------------------------------------------
 function buildPlan(evald, htf, htfLabel, meta, results, candles, isForming, rctx) {
   const s = evald.setup;
-  const R = Math.abs(s.entryPrice - s.stop);
   const long = s.direction === "LONG";
+  // Stop FLOOR: never risk less than the largest of the structure stop,
+  // k × ATR(14) at the trigger, and m × the modeled spread. Micro-stops make
+  // round-trip costs dominate R (costs_in_R = costPct / stopPct); the floor caps
+  // that by widening tiny stops. k/m = config.scalper.stopFloorK/M (0 disables).
+  // The setup still trades — only its stop/targets are recomputed from the floor.
+  const structDist = Math.abs(s.entryPrice - s.stop);
+  const atr = evald.atrAtTrigger || 0;
+  const spreadDist = (CONFIG.costs.spreadPct || 0) * s.entryPrice;
+  const R = Math.max(structDist, (CONFIG.scalper.stopFloorK || 0) * atr, (CONFIG.scalper.stopFloorM || 0) * spreadDist);
+  const stopFloored = R > structDist + 1e-12;
+  const stop = long ? s.entryPrice - R : s.entryPrice + R;
+  const stopPct = s.entryPrice > 0 ? (R / s.entryPrice) * 100 : Infinity;
   const tp1 = long ? s.entryPrice + CONFIG.gate.tp1R * R : s.entryPrice - CONFIG.gate.tp1R * R;
   const tp2 = long ? s.entryPrice + CONFIG.gate.tp2R * R : s.entryPrice - CONFIG.gate.tp2R * R;
   const wantSignal = long ? "BUY" : "SELL";
@@ -205,12 +219,14 @@ function buildPlan(evald, htf, htfLabel, meta, results, candles, isForming, rctx
     entryLow: s.entryLow,
     entryHigh: s.entryHigh,
     entryPrice: s.entryPrice,
-    stop: s.stop,
+    stop,
     tp1, tp2,
     rr1: CONFIG.gate.tp1R,
     rr2: CONFIG.gate.tp2R,
     riskPerUnit: R,
-    stopPct: evald.stopPct,
+    stopPct,
+    structStopPct: evald.stopPct,
+    stopFloored,
     score,
     tier,
     alignedCount: evald.alignedCount,
@@ -288,7 +304,29 @@ export function trackOutcome(plan, candles) {
 
   const path = pathFor(state, done);
   const { grossR, netR } = computeR(plan, path);
+  assertCostInvariant(plan, netR);
   return { state, done, path, grossR, netR, realizedR: netR, note, barsSinceTrigger: barsSince };
+}
+
+// Cost-model sanity: a resolved trade can never net worse than losing the full R
+// plus round-trip costs — the stopped-path floor -(1 + costs_in_R). We assert
+// that structurally (net >= the exact stopped floor) AND that the closed-form
+// costs_in_R = costPct/stopPct agrees with the model floor (a big mismatch = a
+// unit/conversion bug, e.g. stopPct as % vs fraction). Cheap; catches the class
+// of bug that would make a -2.9R average look like a conversion error.
+function assertCostInvariant(plan, netR) {
+  if (!Number.isFinite(netR)) return;
+  const exactFloor = computeR(plan, "stopped").netR; // the worst possible net (stopped)
+  if (netR < exactFloor - 1e-9) {
+    throw new Error(`cost-model invariant: netR ${netR.toFixed(4)} below the stopped floor ${exactFloor.toFixed(4)} for ${plan.id}`);
+  }
+  const cir = costsInR(plan);
+  if (Number.isFinite(cir)) {
+    const closed = -(1 + cir); // -(1 + costs_in_R)
+    if (Math.abs(closed - exactFloor) > 0.15 * Math.abs(exactFloor) + 0.05) {
+      throw new Error(`costs_in_R conversion mismatch: closed-form -(1+${cir.toFixed(3)}) = ${closed.toFixed(3)} vs model floor ${exactFloor.toFixed(3)} (stopPct ${(plan.stopPct ?? 0).toFixed(3)}%)`);
+    }
+  }
 }
 
 /** Map an outcome state to a cost-model path. */

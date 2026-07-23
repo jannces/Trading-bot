@@ -21,6 +21,14 @@ Related (not re-tuned here, but worth noting on 5m):
   breakeven → runner model is TF-agnostic.
 - `backtest.maxBarsToFill` (10) — the backtest's own fill window; keep it ≥ the
   `expireBars` you settle on so live and backtest agree on "did it fill".
+- `scalper.stopFloorK` (**0.5**) / `scalper.stopFloorM` (**3**) — the stop FLOOR:
+  effective risk `R = max(structure stop, stopFloorK × ATR(14) at trigger,
+  stopFloorM × modeled spread)`, with stop/TP recomputed from `R`. Micro-stops
+  make round-trip costs dominate net R (`costs_in_R = costPct / stopPct`; real
+  data showed ~0.065% median stops vs ~0.17% cost → ~2.9R bled on a loss). The
+  `--matrix` STOP-DISTANCE AUDIT shows the distribution; the `--walk` grid A/Bs the
+  floor off vs on. Set both to 0 to disable. Tune upward if `costs_in_R @ p50`
+  stays above ~1.
 - `replay.windowBars` (**200**) — the rolling window (in bars) every replay path
   evaluates each bar on, mirroring `scanner.klineLimit` from one source of truth
   (`WINDOW_BARS` in `config.js`). This is a **live-parity** knob, not a tuning
