@@ -1,0 +1,230 @@
+# System Overview — MEXC Scalper Signal Scanner
+
+A technical description of the whole system, written so another engineer or AI
+can suggest improvements. It reflects the actual code in this repo.
+
+---
+
+## 1. Purpose
+
+A **local, single-user** web app that scans the top-50 MEXC USDT spot pairs for
+short-timeframe ("scalper") trade setups, emits **locked trade signals** (frozen
+entry / stop / take-profits) when a strict confluence gate passes, tracks each
+signal's outcome live, and records results (with realized R / PnL) to a
+persistent ledger. It is an **educational / decision-support tool**, not an
+auto-trader — it never places orders.
+
+---
+
+## 2. High-level architecture
+
+```
+                     MEXC public REST API (api.mexc.com)
+                                  ▲   (polling)
+                                  │
+  ┌───────────────────────────────────────────────────────────┐
+  │  server.js  (Node 18+, built-in http + global fetch)       │
+  │                                                            │
+  │  ┌──────────────┐   ┌──────────────┐   ┌────────────────┐  │
+  │  │ price loop   │   │ scan loop    │   │ top-list loop  │  │
+  │  │ every 1.5s   │   │ every 15s    │   │ hourly         │  │
+  │  └──────┬───────┘   └──────┬───────┘   └───────┬────────┘  │
+  │         │                  │                   │           │
+  │         ▼                  ▼                   ▼           │
+  │  ┌─────────────────────────────────────────────────────┐  │
+  │  │ Scanner (js/scanner.js): kline cache, evaluate() gate│  │
+  │  │ per pair/timeframe, signal lifecycle, ledger         │  │
+  │  └─────────────────────────────────────────────────────┘  │
+  │         │  broadcasts scan / prices / signal / ledger      │
+  │         ▼  over Server-Sent Events (SSE, /events)          │
+  └─────────┼──────────────────────────────────────────────────┘
+            │  (single local HTTP connection)
+            ▼
+   Browser frontend (index.html + js/app.js): renders scanner feed,
+   detail modal (TradingView Lightweight Charts + embedded widget), ledger.
+```
+
+- **Backend** owns all data fetching and all evaluation. **No exchange calls
+  happen from the browser** (avoids CORS, rate limits, and N websockets).
+- **Frontend is a thin renderer**: it consumes SSE messages and draws. Its only
+  outbound calls are `/api/klines` (for the detail chart) and loading the
+  TradingView CDN scripts.
+- **Transport** browser⇄server is **SSE** (one-way push) + a couple of GET
+  endpoints. Not a websocket.
+
+---
+
+## 3. Data source & "real-time" characteristics
+
+- **Exchange:** MEXC spot v3 REST (`https://api.mexc.com`), Binance-compatible
+  paths, MEXC interval strings (note `1h` == `60m`).
+  - `GET /api/v3/ticker/24hr` — rank pairs by 24h quote volume.
+  - `GET /api/v3/klines?symbol=&interval=&limit=` — OHLCV.
+  - `GET /api/v3/ticker/price` — all-symbol last prices in one call.
+- **Live mode = "poll" (default).** Latencies:
+  - **Prices:** every **1.5s** (`timing.pricePollMs`).
+  - **Scanner re-evaluation:** every **15s** (`timing.scanIntervalMs`); each
+    cycle refetches 1m/5m/15m klines (limit 200) for all 50 pairs with a
+    concurrency cap of 6 and a 40ms stagger, plus exponential backoff on 429.
+  - **Top-50 list:** hourly (`scanner.listRefreshMs`).
+- **WebSocket:** `js/mexcws.js` implements `wss://wbs.mexc.com/ws`
+  (`{"method":"SUBSCRIPTION","params":["spot@public.deals.v3.api@SYM"]}`) but is
+  **NOT wired into the running server** and is **unverified** (build sandbox
+  couldn't reach MEXC; MEXC has partly migrated spot streams to **protobuf**).
+  Enabling true streaming is an open improvement.
+
+**Net:** near-real-time via polling. Good enough for 1m/5m scalping cadence; not
+a sub-second/tick system.
+
+---
+
+## 4. Scanner logic (js/scanner.js)
+
+1. **Universe:** top-50 USDT pairs by 24h quote volume, excluding leveraged
+   tokens (`…3L/3S`) and stable-vs-stable pairs.
+2. **Timeframes:** scans **1m and 5m**; **15m is the higher-timeframe (HTF) bias
+   filter**. A **1m signal also requires 5m directional agreement**.
+3. Each scan cycle: for every pair × {1m, 5m} it calls the gate `evaluate()` with
+   that pair's candles + the 15m candles. Results become feed items:
+   - **ACTIVE** → a locked signal (see §6),
+   - **FORMING** → a setup fired and nothing hard-rejects it, but it needs more
+     confirmations (shows what's missing),
+   - **NONE** → not shown.
+4. Feed is ranked: active first, then forming, each by score.
+
+---
+
+## 5. The "brain": setups + confluence gate
+
+### Indicators (js/indicators.js — pure functions)
+EMA, SMA, RSI (Wilder), MACD, ATR, Bollinger, Stochastic, OBV, VWAP, Ichimoku,
+and fractal pivot detection.
+
+### 10 confirmation strategies (js/strategies/*)
+EMA cross, RSI(+divergence), MACD, Bollinger, Ichimoku, Stochastic, VWAP,
+S/R breakout, Smart-Money-Concepts (ICT), Volume/OBV. Each exports
+`analyze(candles) → { signal: BUY|SELL|NEUTRAL, strength: 0-100, reason }`.
+In this system they are **confirmations**, not the trigger.
+
+### 4 named setups (js/setups.js) — the trigger (an *event*, not a state)
+- **Sweep & Reverse (SMC):** liquidity sweep of a prior swing + displacement;
+  entry at the resulting fair-value-gap / order block.
+- **Divergence Reversal:** regular RSI divergence at a swing + oscillator
+  extreme + reaction candle.
+- **Breakout & Retest:** confirmed close-based S/R break; entry on the retest.
+- **Trend Pullback:** EMA9/21 trend intact + pullback to EMA21/VWAP + MACD
+  momentum resuming.
+Each setup computes its **own** entry zone, stop (invalidation), and direction
+from market structure, and a self-strength.
+
+### The gate (js/confluence.js `evaluate()`)
+A signal **LOCKS** only when ALL hold (all thresholds in `js/config.js`):
+1. a setup triggered within `gate.triggerRecencyBars` (3) bars,
+2. **≥ `gate.minAgree` (6) of 10** strategies agree with the setup direction,
+   and none of `gate.vetoStrategies` (RSI, SMC, S/R) contradicts,
+3. **HTF (15m) bias is not counter** (bias from EMA structure + swings),
+4. **R:R to TP1 ≥ `gate.minRR` (1.2)** with room to the nearest opposing
+   structure, and
+5. **scalper guardrail:** stop distance ≤ `scalper.stopCapPct[tf]`
+   (0.6% on 1m, 1.2% on 5m).
+
+Outputs per signal: **tier** (A+ ≥8 aligned & HTF strong; A ≥7; B ≥6), a
+**0–100 score** (blend of setup strength, avg aligned-strategy strength, aligned
+count, HTF), **named contributors** with individual scores, a plain-language
+**confluence checklist**, and levels: entry zone, stop, **TP1 (1.5R)**,
+**TP2 (3R)**.
+
+---
+
+## 6. Signal lifecycle, outcomes & ledger
+
+- On lock, a **frozen** record is created: side and all levels never change
+  afterward — only **status** advances:
+  `LOCKED → RUNNING → TP1 HIT → TP2 HIT / STOPPED / EXPIRED`.
+- **Outcome simulation** (`trackOutcome`, also used by the backtest): limit
+  entry fills when price trades into the zone; **half off at TP1**, stop moves to
+  **breakeven**, runner to **TP2**; conservative intrabar (stop/BE assumed before
+  target). **Expires** if unfilled within `scalper.expireBars[tf]` (10 bars).
+- **Realized R** per signal: stopped = −1R; TP1-then-breakeven = +0.75R;
+  TP1+TP2 = +2.25R.
+- **Ledger** (`ledger.json`, persisted, survives restarts): one immutable record
+  per signal. The UI summary shows, overall and per setup type: signals (W/L),
+  **win rate, avg R, and Net R (cumulative PnL in R)**.
+
+---
+
+## 7. Frontend (index.html, js/app.js, js/chart.js, js/tvwidget.js)
+
+- **Scanner feed:** a card per active/forming signal — pair, TF, direction,
+  0–100 score ring, entry/SL/TP1/TP2, contributor chips, age in bars, status
+  badge, and a **live price tick** (updated from the 1.5s price push).
+- **Detail modal:** TradingView **Lightweight Charts** of the pair/TF with the
+  **frozen** entry/SL/TP price lines + trigger-candle marker, the full confluence
+  checklist, and a second tab embedding the TradingView **Advanced widget**
+  (`MEXC:` symbol) for manual analysis (programmatic levels only draw on the
+  Lightweight chart).
+- **Ledger column:** immutable records + the PnL summary header.
+- **Alerts:** optional browser notification + sound on new A/A+ signals.
+
+---
+
+## 8. Backtest (backtest.js)
+
+Replays candles **bar-by-bar through the same `evaluate()` gate** (no
+look-ahead; HTF derived by resampling), applies the scalper guardrails, simulates
+each plan with the same half-off/BE/runner rules, and reports per setup type /
+per tier / (per pair in `--scan`): signals, win rate, avg R, expectancy, max
+drawdown in R. Flags negative-expectancy setups to disable.
+`node backtest.js SYMBOL TF CANDLES` | `--scan TF CANDLES` | `--demo`.
+
+---
+
+## 9. Tech stack & files
+
+- **Runtime:** Node.js 18+ (ES modules, built-in `http`, global `fetch`); no
+  required runtime deps on the default path (`ws` only for the optional WS).
+- **Frontend:** vanilla JS ES modules, no framework/build step; TradingView
+  Lightweight Charts + Advanced widget from CDN.
+- **Key files:** `server.js`, `js/{config,mexc,scanner,confluence,setups,htf,
+  indicators,app,chart,tvwidget,mexcws,mockprovider}.js`, `js/strategies/*`,
+  `backtest.js`, `tests/*` (indicators, setups, mexc-parsing fixtures).
+- **Config:** everything tunable is in `js/config.js`.
+
+---
+
+## 10. Known limitations / candidate areas to improve
+
+Explicitly listed so a reviewer has hooks:
+
+1. **Polling, not streaming.** Prices 1.5s, signals 15s. Verify + wire the MEXC
+   websocket (protobuf) for true real-time; drive the scan on candle-close events
+   instead of a fixed 15s timer.
+2. **Kline refetch is heavy.** Every 15s it refetches 200 candles × 50 pairs × 3
+   timeframes. Could cache and fetch only the latest N closed candles, or use
+   kline websocket streams.
+3. **Signal quality is unvalidated on real data.** The gate/weights/guardrails
+   are heuristic; no real-money or large historical validation has been run
+   (build env couldn't reach MEXC). Needs real backtests + parameter tuning, and
+   ideally walk-forward / out-of-sample testing.
+4. **Outcome model is simplified.** No fees, no slippage, no funding, no partial
+   fills, single fixed fill assumption; conservative intrabar ordering only. A
+   realistic cost model would change expectancy.
+5. **One signal per pair/timeframe at a time**; no position sizing, no portfolio
+   view, no correlation handling across pairs.
+6. **HTF bias in the scanner uses real 15m klines; the backtest resamples** —
+   small intentional divergence between the two paths.
+7. **No auth / multi-user / persistence beyond a flat JSON ledger.** No database,
+   no historical analytics beyond the session summary.
+8. **Frontend has no state for reconnect gaps** (SSE reconnects but may miss
+   events between drops); no unit/e2e tests on the UI beyond a modal smoke check.
+9. **Contributor chips don't show per-contributor directional agreement** on
+   shorts, which can look contradictory.
+10. **Security/ops:** binds `0.0.0.0`-style local server with no rate limiting or
+    input validation on `/api/klines` beyond basics; intended for localhost only.
+
+---
+
+## 11. What it deliberately does NOT do
+
+No order placement / trading, no API keys, no leverage/derivatives, no
+financial advice. Signals are illustrative.
