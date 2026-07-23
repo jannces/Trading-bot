@@ -14,6 +14,7 @@
 import { CONFIG } from "./config.js";
 import { evaluate, trackOutcome } from "./confluence.js";
 import { rankTopPairs } from "./mexc.js";
+import { intervalMinutes } from "./htf.js";
 
 export class Scanner {
   constructor(provider) {
@@ -78,10 +79,29 @@ export class Scanner {
     return feed;
   }
 
+  /**
+   * Incremental kline maintenance: on the first cycle (or after a detected gap)
+   * pull the full window; otherwise fetch only the last few candles and merge by
+   * open time. Cuts bandwidth ~50x vs refetching 200 candles every cycle.
+   */
   async ensureKlines(sym, tf) {
+    const key = `${sym}:${tf}`;
+    const intMs = intervalMinutes(tf) * 60000;
     try {
-      const c = await this.provider.getKlines(sym, tf, CONFIG.scanner.klineLimit);
-      if (Array.isArray(c) && c.length) this.klines.set(`${sym}:${tf}`, c);
+      const cache = this.klines.get(key);
+      if (!cache || cache.length < CONFIG.backtest.warmup) {
+        const c = await this.provider.getKlines(sym, tf, CONFIG.scanner.klineLimit);
+        if (Array.isArray(c) && c.length) this.klines.set(key, c);
+        return;
+      }
+      const fresh = await this.provider.getKlines(sym, tf, CONFIG.timing.incrementalKlineLimit);
+      const merged = mergeIncremental(cache, fresh, intMs, CONFIG.scanner.klineLimit);
+      if (merged.gap) {
+        const c = await this.provider.getKlines(sym, tf, CONFIG.scanner.klineLimit);
+        if (Array.isArray(c) && c.length) this.klines.set(key, c);
+      } else if (merged.candles) {
+        this.klines.set(key, merged.candles);
+      }
     } catch { /* leave stale data; a later cycle retries */ }
   }
 
@@ -202,6 +222,27 @@ export class Scanner {
 }
 
 // --- helpers ---------------------------------------------------------------
+/**
+ * Merge a small `fresh` fetch into the cached window.
+ *  - a candle with the same open time replaces the last (in-progress/just-closed),
+ *  - the exact next candle (last.time + intervalMs) is appended,
+ *  - a jump beyond that means we missed candles -> { gap: true } (caller refetches).
+ * Older candles are ignored. The window is capped at `cap`.
+ */
+export function mergeIncremental(cache, fresh, intervalMs, cap) {
+  if (!fresh || !fresh.length) return { candles: cache };
+  const out = cache.slice();
+  for (const c of fresh) {
+    const last = out[out.length - 1];
+    if (c.time < last.time) continue;
+    if (c.time === last.time) out[out.length - 1] = c;
+    else if (c.time === last.time + intervalMs) out.push(c);
+    else return { gap: true };
+  }
+  if (out.length > cap) out.splice(0, out.length - cap);
+  return { candles: out };
+}
+
 function rankKind(k) { return k === "active" ? 0 : 1; }
 function statusLabel(state) {
   return { waiting: "LOCKED", running: "RUNNING", tp1: "TP1 HIT", tp2: "TP2 HIT", stopped: "STOPPED", expired: "EXPIRED" }[state] || "LOCKED";

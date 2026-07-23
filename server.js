@@ -64,10 +64,29 @@ async function refreshTopSafe() {
   try { await scanner.refreshTop(); wsStatus = MOCK ? "mock data" : `REST polling (${CONFIG.timing.pricePollMs}ms)`; }
   catch (e) { wsStatus = `data source error: ${e.message}`; console.error("Top-list refresh failed:", e.message); }
 }
-async function scanLoop() {
+async function runScan() {
   try { await scanner.scan(); broadcast({ type: "scan", ...scanner.snapshot(wsStatus) }); }
   catch (e) { console.error("Scan error:", e.message); }
-  setTimeout(scanLoop, CONFIG.timing.scanIntervalMs);
+}
+// Candle-close-driven scanning (live): scan just after each 1m close + grace, so
+// evaluation is fresh and we don't waste cycles mid-candle. A slow fallback timer
+// guarantees progress if the aligned timer drifts or in MOCK (compressed time).
+function scheduleAlignedScan() {
+  const int = 60 * 1000; // fastest scan timeframe (1m) close boundary
+  const delay = int - (Date.now() % int) + CONFIG.timing.candleCloseGraceMs;
+  setTimeout(async () => { await runScan(); scheduleAlignedScan(); }, delay);
+}
+function startScanning() {
+  runScan(); // immediate first scan
+  if (MOCK) {
+    // Mock time is compressed; a flat timer keeps the demo lively.
+    const tick = () => { runScan().finally(() => setTimeout(tick, CONFIG.timing.scanIntervalMs)); };
+    setTimeout(tick, CONFIG.timing.scanIntervalMs);
+  } else {
+    scheduleAlignedScan();
+    // Safety net: force a scan if none has happened for 1.5× the fallback window.
+    setInterval(() => { if (Date.now() - scanner.lastScanMs > CONFIG.timing.scanIntervalMs * 1.5) runScan(); }, CONFIG.timing.scanIntervalMs);
+  }
 }
 async function priceLoop() {
   try {
@@ -133,7 +152,7 @@ async function main() {
     console.log(`\nScalper scanner on http://localhost:${CONFIG.server.port}  ${MOCK ? "(MOCK data)" : "(live MEXC)"}`);
     console.log(`Scanning top ${scanner.symbols().length} pairs on ${CONFIG.scanner.scanTimeframes.join("/")} · HTF ${CONFIG.scanner.htfTimeframe}`);
   });
-  scanLoop();
+  startScanning();
   priceLoop();
 }
 main().catch((e) => { console.error("Fatal:", e); process.exit(1); });

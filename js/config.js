@@ -29,10 +29,12 @@ export const CONFIG = {
   // -- Live price + scan cadence (server-side) ------------------------------
   timing: {
     pricePollMs: 1500, // poll all-symbol prices every 1.5s (WS fallback)
-    scanIntervalMs: 15 * 1000, // re-run the scanner loop at least this often
+    scanIntervalMs: 15 * 1000, // fallback/safety scan cadence
     klineStaggerMs: 40, // gap between per-pair kline fetches (politeness)
     maxConcurrentFetches: 6,
     backoffBaseMs: 800, // 429 backoff base (exponential)
+    incrementalKlineLimit: 3, // per cycle, fetch only the last N candles and merge
+    candleCloseGraceMs: 1500, // scan this long after each 1m candle close (live mode)
   },
 
   // -- Live feed mode -------------------------------------------------------

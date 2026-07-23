@@ -63,9 +63,14 @@ auto-trader — it never places orders.
   - `GET /api/v3/ticker/price` — all-symbol last prices in one call.
 - **Live mode = "poll" (default).** Latencies:
   - **Prices:** every **1.5s** (`timing.pricePollMs`).
-  - **Scanner re-evaluation:** every **15s** (`timing.scanIntervalMs`); each
-    cycle refetches 1m/5m/15m klines (limit 200) for all 50 pairs with a
-    concurrency cap of 6 and a 40ms stagger, plus exponential backoff on 429.
+  - **Scanner re-evaluation (Phase 3): candle-close-driven.** In live mode a scan
+    runs just after each 1m close + `timing.candleCloseGraceMs` (so evaluation is
+    fresh, not mid-candle), with `timing.scanIntervalMs` as a slow safety
+    fallback. Klines are maintained **incrementally**: after warm-up each cycle
+    fetches only `timing.incrementalKlineLimit` (3) candles and merges by open
+    time (full refetch only on gap/startup) — same request count, ~50× less
+    payload. Concurrency cap 6, 40ms stagger, exponential backoff on 429.
+    (MOCK uses a flat timer since its time is compressed.)
   - **Top-50 list:** hourly (`scanner.listRefreshMs`).
 - **WebSocket:** `js/mexcws.js` implements `wss://wbs.mexc.com/ws`
   (`{"method":"SUBSCRIPTION","params":["spot@public.deals.v3.api@SYM"]}`) but is
@@ -226,12 +231,13 @@ array (setup ids and `id@tf` combos with negative net expectancy).
 
 Explicitly listed so a reviewer has hooks:
 
-1. **Polling, not streaming.** Prices 1.5s, signals 15s. Verify + wire the MEXC
-   websocket (protobuf) for true real-time; drive the scan on candle-close events
-   instead of a fixed 15s timer.
-2. **Kline refetch is heavy.** Every 15s it refetches 200 candles × 50 pairs × 3
-   timeframes. Could cache and fetch only the latest N closed candles, or use
-   kline websocket streams.
+1. **Polling, not streaming.** Prices still poll at 1.5s (scanning is now
+   candle-close-driven, Phase 3). Verifying + wiring the MEXC websocket
+   (protobuf) would give true tick-level real-time.
+2. **Kline refetch — now incremental (Phase 3).** After warm-up each cycle
+   fetches only the last few candles and merges by open time (full refetch on
+   gap/startup). Remaining win: kline **websocket** streams to drop polling
+   entirely.
 3. **Signal quality is unvalidated on real data.** The gate/weights/guardrails
    are heuristic; no real-money or large historical validation has been run
    (build env couldn't reach MEXC). Needs real backtests + parameter tuning, and

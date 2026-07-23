@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "mock": "MOCK=1 node server.js",
-    "test": "node tests/indicators.test.js && node tests/setups.test.js && node tests/mexc.test.js && node tests/costs.test.js",
+    "test": "node tests/indicators.test.js && node tests/setups.test.js && node tests/mexc.test.js && node tests/costs.test.js && node tests/scanner.test.js",
     "backtest": "node backtest.js",
     "backtest:demo": "node backtest.js --demo"
   },
