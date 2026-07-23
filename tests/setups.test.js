@@ -3,9 +3,10 @@
 // setup triggering, the gate, and live outcome tracking. Zero dependencies.
 //   node tests/setups.test.js
 // ============================================================================
-import { htfBias, resampleToHTF, htfFactor, intervalMinutes } from "../js/htf.js";
+import { htfBias, resampleToHTF, htfFactor, intervalMinutes, htfSliceAtTime } from "../js/htf.js";
 import { detectSetups } from "../js/setups.js";
 import { evaluate, trackOutcome } from "../js/confluence.js";
+import { CONFIG } from "../js/config.js";
 
 let passed = 0;
 let failed = 0;
@@ -71,6 +72,37 @@ console.log("detectSetups: sweep & reverse (long)");
     ok(sweep.stop < sweep.entryLow, "stop is below the entry zone");
     ok(sweep.entryPrice === sweep.entryHigh, "long entryPrice = top of zone");
   }
+}
+
+// --- htfSliceAtTime (no look-ahead) ----------------------------------------
+console.log("htfSliceAtTime");
+{
+  const htf = [mk(1, 1, 1, 1), mk(2, 2, 2, 2), mk(3, 3, 3, 3)].map((c, i) => ({ ...c, time: (i + 1) * 100 }));
+  eq(htfSliceAtTime(htf, 250).length, 2, "includes candles at/before t=250");
+  eq(htfSliceAtTime(htf, 300).length, 3, "inclusive of exact time");
+  eq(htfSliceAtTime(htf, 50).length, 0, "nothing before first candle");
+  eq(htfSliceAtTime([], 100).length, 0, "empty input -> empty");
+}
+
+// --- disabledSetups gate filter --------------------------------------------
+console.log("disabledSetups gate filter");
+{
+  const cs = [];
+  let px = 100;
+  for (let i = 0; i < 52; i++) { const o = px; px += 0.25; const cc = px; cs.push(mk(o, Math.max(o, cc) + 0.1, Math.min(o, cc) - 0.1, cc)); }
+  cs.push(mk(px, px + 0.1, px - 0.2, px - 0.15));
+  cs.push(mk(px - 0.15, px - 0.1, px - 1.6, px - 1.4));
+  cs.push(mk(px - 1.4, px - 1.3, px - 2.2, px - 1.5));
+  cs.push(mk(px - 1.5, px - 0.9, px - 1.6, px - 1.0));
+  cs.push(mk(px - 1.0, px - 0.4, px - 1.1, px - 0.6));
+  cs.push(mk(px - 0.7, px + 0.8, px - 2.6, px + 0.6));
+  cs.push(mk(px + 0.6, px + 0.9, px + 0.4, px + 0.75));
+  cs.push(mk(px + 0.75, px + 1.0, px + 0.6, px + 0.9));
+  ok(detectSetups(cs).some((s) => s.id === "sweep_reverse"), "sweep triggers before disabling");
+  CONFIG.disabledSetups = ["sweep_reverse@5m"];
+  const d = evaluate(cs, [], { symbol: "T", interval: "5m", htfInterval: "15m" });
+  ok(d.status === "NONE" || d.plan?.id !== "sweep_reverse", "sweep_reverse@5m suppressed by disabledSetups");
+  CONFIG.disabledSetups = []; // restore
 }
 
 // --- Gate sanity: flat data -> NO TRADE ------------------------------------

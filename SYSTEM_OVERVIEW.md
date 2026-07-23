@@ -183,14 +183,29 @@ count, HTF), **named contributors** with individual scores, a plain-language
 
 ---
 
-## 8. Backtest (backtest.js)
+## 8. Backtest & validation tooling (backtest.js)
 
 Replays candles **bar-by-bar through the same `evaluate()` gate** (no
-look-ahead; HTF derived by resampling), applies the scalper guardrails, simulates
-each plan with the same half-off/BE/runner rules, and reports per setup type /
-per tier / (per pair in `--scan`): signals, win rate, avg R, expectancy, max
-drawdown in R. Flags negative-expectancy setups to disable.
-`node backtest.js SYMBOL TF CANDLES` | `--scan TF CANDLES` | `--demo`.
+look-ahead), applies the scalper guardrails, and simulates each plan with the
+same half-off/BE/runner rules **and the shared cost model** (gross + net R).
+**HTF bias uses REAL higher-timeframe klines sliced by time**
+(`htf.htfSliceAtTime`) — identical to the live scanner, not resampled.
+
+Base runs: `node backtest.js SYMBOL TF CANDLES` | `--scan TF CANDLES` | `--demo`.
+Reports per setup type / per tier / (per pair in `--scan`): n, win rate,
+gross & net expectancy, **profit factor**, and max drawdown in R.
+
+Validation flags:
+- `--split [frac]` — in-sample vs out-of-sample split (default 0.7); prints both
+  and whether edge **holds out-of-sample**.
+- `--matrix` — runs all scanner timeframes and prints a **setup × timeframe ×
+  tier** net-expectancy table.
+- `--walk` — **walk-forward**: grid-searches {`gate.minAgree`, `gate.minRR`,
+  `scalper.stopCapPct`} on rolling train windows, applies the winner to the next
+  (out-of-sample) window, and aggregates OOS results.
+
+The negative-expectancy report prints a suggested **`config.disabledSetups`**
+array (setup ids and `id@tf` combos with negative net expectancy).
 
 ---
 
@@ -228,8 +243,9 @@ Explicitly listed so a reviewer has hooks:
    `spreadPct` estimate), conservative intrabar ordering only.
 5. **One signal per pair/timeframe at a time**; no position sizing, no portfolio
    view, no correlation handling across pairs.
-6. **HTF bias in the scanner uses real 15m klines; the backtest resamples** —
-   small intentional divergence between the two paths.
+6. **HTF divergence fixed (Phase 2):** the backtest now consumes real 15m klines
+   sliced by time (`htf.htfSliceAtTime`), matching the live scanner. (The mock
+   provider still derives its own 15m by resampling its 1m base — self-consistent.)
 7. **No auth / multi-user / persistence beyond a flat JSON ledger.** No database,
    no historical analytics beyond the session summary.
 8. **Frontend has no state for reconnect gaps** (SSE reconnects but may miss

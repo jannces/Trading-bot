@@ -106,3 +106,19 @@ export function htfBias(htfCandles) {
 export function biasForDirection(dir) {
   return dir === "LONG" ? "BULL" : "BEAR";
 }
+
+/**
+ * Slice a higher-timeframe candle series to only those closed at/before time `t`
+ * (no look-ahead). Used by the backtest so it consumes REAL HTF klines the same
+ * way the live scanner does, instead of resampling — removing the backtest/live
+ * HTF divergence. `htf` must be ascending by time.
+ */
+export function htfSliceAtTime(htf, t) {
+  if (!htf || !htf.length) return [];
+  let lo = 0, hi = htf.length - 1, idx = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (htf[mid].time <= t) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
+  }
+  return idx < 0 ? [] : htf.slice(0, idx + 1);
+}

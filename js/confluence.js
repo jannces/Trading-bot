@@ -34,7 +34,10 @@ const SETUP_DISPLAY = {
 export function evaluate(candles, htfCandles, meta = {}) {
   const results = runAll(candles);
   const ctx = buildContext(candles);
-  const setups = detectSetups(candles, ctx);
+  const disabled = CONFIG.disabledSetups || [];
+  const setups = detectSetups(candles, ctx).filter(
+    (s) => !disabled.includes(s.id) && !disabled.includes(`${s.id}@${meta.interval}`)
+  );
   const htf = htfBias(htfCandles);
   const htfLabel = meta.htfInterval || "HTF";
 

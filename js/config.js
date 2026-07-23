@@ -94,6 +94,11 @@ export const CONFIG = {
     trend_pullback: { enabled: true, atrBuffer: 0.6, nearBand: 0.6 },
   },
 
+  // Setups disabled globally or per-timeframe. Entries are a setup id (e.g.
+  // "breakout_retest") or "id@tf" (e.g. "breakout_retest@1m"). The backtest's
+  // negative-expectancy report suggests entries for this list.
+  disabledSetups: [],
+
   risk: { atrPeriod: 14 },
 
   indicators: {
