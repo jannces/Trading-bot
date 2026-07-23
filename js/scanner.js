@@ -164,8 +164,10 @@ export class Scanner {
     const summary = (rows) => {
       const n = rows.length;
       const wins = rows.filter((r) => r.realizedR > 0).length;
-      const avg = n ? rows.reduce((a, r) => a + r.realizedR, 0) / n : 0;
-      return { n, winRate: n ? (wins / n) * 100 : 0, avgR: avg, expectancy: avg };
+      const losses = rows.filter((r) => r.realizedR < 0).length;
+      const totalR = rows.reduce((a, r) => a + r.realizedR, 0); // cumulative PnL in R
+      const avg = n ? totalR / n : 0;
+      return { n, wins, losses, winRate: n ? (wins / n) * 100 : 0, avgR: avg, expectancy: avg, totalR };
     };
     const perSetup = {};
     for (const r of closed) (perSetup[r.setupName || r.setup] ||= []).push(r);

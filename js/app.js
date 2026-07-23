@@ -24,6 +24,7 @@ function init() {
   el("notifyToggle").addEventListener("click", toggleNotify);
   el("detailClose").addEventListener("click", closeDetail);
   el("detail").addEventListener("click", (e) => { if (e.target === el("detail")) closeDetail(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !el("detail").hidden) closeDetail(); });
   el("tabLw").addEventListener("click", () => detailTab("lw"));
   el("tabAdv").addEventListener("click", () => detailTab("adv"));
   connect();
@@ -137,12 +138,12 @@ function renderLedger() {
     const o = s.overall;
     el("ledgerSummary").innerHTML = `
       <div class="ls-row">
-        <div><span>Signals</span><b>${o.n}</b></div>
+        <div><span>Signals</span><b>${o.n}${o.n ? ` <small class="muted">(${o.wins}W/${o.losses}L)</small>` : ""}</b></div>
         <div><span>Win rate</span><b>${o.n ? o.winRate.toFixed(0) + "%" : "—"}</b></div>
-        <div><span>Avg R</span><b>${o.n ? fmtR(o.avgR) : "—"}</b></div>
-        <div><span>Expectancy</span><b>${o.n ? fmtR(o.expectancy) : "—"}</b></div>
+        <div><span>Avg R</span><b class="${pnlCls(o.avgR)}">${o.n ? fmtR(o.avgR) : "—"}</b></div>
+        <div><span>Net R (PnL)</span><b class="${pnlCls(o.totalR)}">${o.n ? fmtR(o.totalR) : "—"}</b></div>
       </div>
-      <div class="ls-setups">${Object.entries(s.bySetup || {}).map(([k, v]) => `<span class="ls-chip">${esc(k)}: ${fmtR(v.expectancy)}R ×${v.n}</span>`).join("")}</div>`;
+      <div class="ls-setups">${Object.entries(s.bySetup || {}).map(([k, v]) => `<span class="ls-chip">${esc(k)}: <b class="${pnlCls(v.totalR)}">${fmtR(v.totalR)}R</b> net · ${fmtR(v.expectancy)} avg ×${v.n}</span>`).join("")}</div>`;
   }
   const rows = [...stateUI.ledger].reverse().slice(0, 60);
   el("ledger").innerHTML = rows.map((r) => {
@@ -229,4 +230,5 @@ function fmtP(p) {
   return p.toPrecision(4);
 }
 function fmtR(v) { return Number.isFinite(v) ? (v >= 0 ? "+" : "") + v.toFixed(2) : "—"; }
+function pnlCls(v) { return v > 0 ? "pnl-pos" : v < 0 ? "pnl-neg" : ""; }
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
