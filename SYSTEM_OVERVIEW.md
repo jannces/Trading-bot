@@ -145,11 +145,26 @@ count, HTF), **named contributors** with individual scores, a plain-language
   entry fills when price trades into the zone; **half off at TP1**, stop moves to
   **breakeven**, runner to **TP2**; conservative intrabar (stop/BE assumed before
   target). **Expires** if unfilled within `scalper.expireBars[tf]` (10 bars).
-- **Realized R** per signal: stopped = −1R; TP1-then-breakeven = +0.75R;
-  TP1+TP2 = +2.25R.
+- **Realized R — gross and net.** Each outcome yields a **gross R** (ideal fills:
+  stopped −1R, TP1→BE +0.75R, TP1+TP2 +2.25R) and a **net R** after the realistic
+  cost model (`js/costs.js`, driven by `config.costs`): fees + slippage on every
+  fill, entries/TPs as MAKER limit fills, stop/breakeven as TAKER market fills
+  crossing the spread. `realizedR` == net. Both are stored per signal and both
+  are shown; on scalps the net drag is material (often 0.2–0.4R/trade).
 - **Ledger** (`ledger.json`, persisted, survives restarts): one immutable record
-  per signal. The UI summary shows, overall and per setup type: signals (W/L),
-  **win rate, avg R, and Net R (cumulative PnL in R)**.
+  per signal (`realizedR` net + `grossR`). The UI summary shows, overall and per
+  setup type: signals (W/L), **win rate, avg net R, Net R (PnL), and gross→net**.
+
+**Cost-model config keys (`config.costs`, fractions of price; 0.0005 = 0.05%):**
+
+| Key | Meaning |
+|---|---|
+| `fees.makerPct` | per-fill fee for MAKER (limit) fills — entry + take-profits |
+| `fees.takerPct` | per-fill fee for TAKER (market) fills — stop-loss + breakeven exit |
+| `slippage.entryPct` | adverse slippage on the entry fill |
+| `slippage.stopPct` | adverse slippage on stop / breakeven market fills |
+| `slippage.entryTicks` | accepted but **not applied** (no per-symbol tick size); use the pct fields |
+| `spreadPct` | half-spread crossed on taker (stop/BE) fills |
 
 ---
 
@@ -206,9 +221,11 @@ Explicitly listed so a reviewer has hooks:
    are heuristic; no real-money or large historical validation has been run
    (build env couldn't reach MEXC). Needs real backtests + parameter tuning, and
    ideally walk-forward / out-of-sample testing.
-4. **Outcome model is simplified.** No fees, no slippage, no funding, no partial
-   fills, single fixed fill assumption; conservative intrabar ordering only. A
-   realistic cost model would change expectancy.
+4. **Outcome model — costs now included (Phase 1), gaps remain.** Fees +
+   slippage + spread are modeled in `js/costs.js` (`config.costs`) and reported
+   as gross vs net R. Still simplified: no funding, no partial fills, a single
+   fixed fill assumption, no per-symbol tick size / real spread (uses a flat
+   `spreadPct` estimate), conservative intrabar ordering only.
 5. **One signal per pair/timeframe at a time**; no position sizing, no portfolio
    view, no correlation handling across pairs.
 6. **HTF bias in the scanner uses real 15m klines; the backtest resamples** —

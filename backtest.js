@@ -15,6 +15,7 @@
 // ============================================================================
 import { CONFIG } from "./js/config.js";
 import { evaluate } from "./js/confluence.js";
+import { computeR } from "./js/costs.js";
 import { resampleToHTF, htfFactor } from "./js/htf.js";
 import * as mexc from "./js/mexc.js";
 import { MockProvider } from "./js/mockprovider.js";
@@ -52,7 +53,9 @@ async function main() {
 
   console.log(`\nBacktest — ${scan ? `SCAN top-${symbols.length}` : symbols[0]} · ${tf} · ${limit} candles · HTF ${htfTf} (×${factor}) · ${demo ? "synthetic demo" : "MEXC"}`);
   console.log(`Gate: setup + >=${CONFIG.gate.minAgree}/10 aligned, no veto, HTF not counter, R:R>=${CONFIG.gate.minRR}, stop<=${CONFIG.scalper.stopCapPct[tf]}%`);
-  console.log(`Sim: half off at TP1 (${CONFIG.gate.tp1R}R), stop->BE, runner to TP2 (${CONFIG.gate.tp2R}R), conservative intrabar\n`);
+  console.log(`Sim: half off at TP1 (${CONFIG.gate.tp1R}R), stop->BE, runner to TP2 (${CONFIG.gate.tp2R}R), conservative intrabar`);
+  const cst = CONFIG.costs;
+  console.log(`Costs: fees maker ${(cst.fees.makerPct * 100).toFixed(3)}% / taker ${(cst.fees.takerPct * 100).toFixed(3)}%, slippage entry ${(cst.slippage.entryPct * 100).toFixed(3)}% / stop ${(cst.slippage.stopPct * 100).toFixed(3)}%, spread ${(cst.spreadPct * 100).toFixed(3)}% -> reporting gross & net R\n`);
 
   const allTrades = [];
   const perPair = {};
@@ -143,34 +146,37 @@ function simulateTrade(candles, plan) {
     if (!tp1) {
       const hitStop = long ? c.low <= stop : c.high >= stop;
       const hitTp1 = long ? c.high >= plan.tp1 : c.low <= plan.tp1;
-      if (hitStop) return done(-1, k);
+      if (hitStop) return fin("stopped", k, false);
       if (hitTp1) { tp1 = true; stop = entry; }
     } else {
       const hitBE = long ? c.low <= stop : c.high >= stop;
       const hitTp2 = long ? c.high >= plan.tp2 : c.low <= plan.tp2;
-      if (hitBE) return done(0.75, k);
-      if (hitTp2) return done(2.25, k);
+      if (hitBE) return fin("tp1_be", k, false);
+      if (hitTp2) return fin("tp1_tp2", k, false);
     }
   }
-  const lastClose = candles[candles.length - 1].close;
-  const mtm = long ? (lastClose - entry) / R : (entry - lastClose) / R;
-  return { filled: true, netR: tp1 ? 0.5 * 1.5 + 0.5 * mtm : mtm, open: true, fillIndex, maeR: mae };
-  function done(netR, k) { return { filled: true, netR, open: false, fillIndex, exitIndex: k, maeR: mae }; }
+  return fin(tp1 ? "tp1_open" : "running", candles.length - 1, true);
+  // Same cost model as live outcome tracking (js/costs.js): gross + net R.
+  function fin(path, k, open) {
+    const { grossR, netR } = computeR(plan, path);
+    return { filled: true, path, grossR, netR, open, fillIndex, exitIndex: k, maeR: mae };
+  }
 }
 
 // --- Reporting -------------------------------------------------------------
 function reportGroups(groups, order) {
   const keys = order ? order.filter((k) => groups[k]?.length) : Object.keys(groups);
-  console.log("  " + pad("group", 20) + pad("n", 5) + pad("win%", 7) + pad("avgR", 8) + pad("expect", 8) + pad("maxDD(R)", 10) + "open");
+  console.log("  " + pad("group", 20) + pad("n", 5) + pad("win%", 7) + pad("grossR", 8) + pad("netR", 8) + pad("maxDD", 9) + "open");
   console.log("  " + "-".repeat(64));
   for (const k of keys) {
     const ts = groups[k];
     const n = ts.length;
     const wins = ts.filter((t) => t.netR > 0.0001).length;
-    const avg = mean(ts.map((t) => t.netR));
+    const avgGross = mean(ts.map((t) => t.grossR));
+    const avgNet = mean(ts.map((t) => t.netR));
     const dd = maxDrawdownR(ts);
     const open = ts.filter((t) => t.open).length;
-    console.log("  " + pad(k, 20) + pad(n, 5) + pad(fmtPct((wins / n) * 100), 7) + pad(fmtR(avg), 8) + pad(fmtR(avg), 8) + pad(fmtR(-dd), 10) + open);
+    console.log("  " + pad(k, 20) + pad(n, 5) + pad(fmtPct((wins / n) * 100), 7) + pad(fmtR(avgGross), 8) + pad(fmtR(avgNet), 8) + pad(fmtR(-dd), 9) + open);
   }
 }
 function maxDrawdownR(trades) {

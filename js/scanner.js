@@ -135,7 +135,7 @@ export class Scanner {
       contributors: plan.contributors.length,
       entryLow: plan.entryLow, entryHigh: plan.entryHigh, entryPrice: plan.entryPrice,
       stop: plan.stop, tp1: plan.tp1, tp2: plan.tp2,
-      createdAt: plan.triggerTime, status: "open", realizedR: null, closedAt: null,
+      createdAt: plan.triggerTime, status: "open", realizedR: null, grossR: null, closedAt: null,
     });
     this.onNewSignal(sig);
     this.onLedgerChange();
@@ -148,11 +148,12 @@ export class Scanner {
       const oc = trackOutcome(sig, candles);
       sig.status = statusLabel(oc.state);
       sig.realizedR = oc.realizedR;
+      sig.grossR = oc.grossR;
       sig.age = oc.barsSinceTrigger;
       sig.note = oc.note;
       if (oc.done) {
         const rec = this.ledger.find((r) => r.id === sig.signalId);
-        if (rec) { rec.status = oc.state; rec.realizedR = oc.realizedR; rec.closedAt = Date.now(); }
+        if (rec) { rec.status = oc.state; rec.realizedR = oc.realizedR; rec.grossR = oc.grossR; rec.closedAt = Date.now(); }
         this.signals.delete(key);
         this.onLedgerChange();
       }
@@ -165,9 +166,14 @@ export class Scanner {
       const n = rows.length;
       const wins = rows.filter((r) => r.realizedR > 0).length;
       const losses = rows.filter((r) => r.realizedR < 0).length;
-      const totalR = rows.reduce((a, r) => a + r.realizedR, 0); // cumulative PnL in R
+      const totalR = rows.reduce((a, r) => a + r.realizedR, 0); // net cumulative PnL in R
+      const grossTotalR = rows.reduce((a, r) => a + (r.grossR ?? r.realizedR), 0);
       const avg = n ? totalR / n : 0;
-      return { n, wins, losses, winRate: n ? (wins / n) * 100 : 0, avgR: avg, expectancy: avg, totalR };
+      return {
+        n, wins, losses, winRate: n ? (wins / n) * 100 : 0,
+        avgR: avg, expectancy: avg, totalR, // net (headline)
+        grossAvgR: n ? grossTotalR / n : 0, grossTotalR,
+      };
     };
     const perSetup = {};
     for (const r of closed) (perSetup[r.setupName || r.setup] ||= []).push(r);

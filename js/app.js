@@ -140,10 +140,11 @@ function renderLedger() {
       <div class="ls-row">
         <div><span>Signals</span><b>${o.n}${o.n ? ` <small class="muted">(${o.wins}W/${o.losses}L)</small>` : ""}</b></div>
         <div><span>Win rate</span><b>${o.n ? o.winRate.toFixed(0) + "%" : "—"}</b></div>
-        <div><span>Avg R</span><b class="${pnlCls(o.avgR)}">${o.n ? fmtR(o.avgR) : "—"}</b></div>
+        <div><span>Avg R net</span><b class="${pnlCls(o.avgR)}">${o.n ? fmtR(o.avgR) : "—"}</b></div>
         <div><span>Net R (PnL)</span><b class="${pnlCls(o.totalR)}">${o.n ? fmtR(o.totalR) : "—"}</b></div>
       </div>
-      <div class="ls-setups">${Object.entries(s.bySetup || {}).map(([k, v]) => `<span class="ls-chip">${esc(k)}: <b class="${pnlCls(v.totalR)}">${fmtR(v.totalR)}R</b> net · ${fmtR(v.expectancy)} avg ×${v.n}</span>`).join("")}</div>`;
+      <div class="ls-gross">${o.n ? `Gross ${fmtR(o.grossTotalR)}R → Net ${fmtR(o.totalR)}R after fees + slippage` : "Gross → Net after fees + slippage"}</div>
+      <div class="ls-setups">${Object.entries(s.bySetup || {}).map(([k, v]) => `<span class="ls-chip">${esc(k)}: <b class="${pnlCls(v.totalR)}">${fmtR(v.totalR)}R</b> net <small class="muted">(gross ${fmtR(v.grossTotalR)})</small> ×${v.n}</span>`).join("")}</div>`;
   }
   const rows = [...stateUI.ledger].reverse().slice(0, 60);
   el("ledger").innerHTML = rows.map((r) => {

@@ -74,6 +74,18 @@ export const CONFIG = {
     expireBars: { "1m": 10, "5m": 10, "15m": 12 }, // no fill within N bars -> expired
   },
 
+  // -- Realistic cost model (fractions of price; 0.0005 = 0.05%) -------------
+  // Applied identically in live outcome tracking and the backtest (js/costs.js).
+  // These are conservative estimates — tune per exchange/tier/pair. Entries and
+  // take-profits are treated as MAKER limit fills; stops and the breakeven exit
+  // as TAKER market fills that also cross the spread. `entryTicks` is accepted
+  // but not applied (no per-symbol tick size is tracked); use the pct fields.
+  costs: {
+    fees: { makerPct: 0.0002, takerPct: 0.0005 }, // per-fill trading fee
+    slippage: { entryTicks: 0, entryPct: 0.0002, stopPct: 0.0005 }, // adverse fill
+    spreadPct: 0.0003, // half-spread crossed on taker (stop/BE) fills
+  },
+
   // -- Setup switches -------------------------------------------------------
   setups: {
     sweep_reverse: { enabled: true, atrBuffer: 0.5 },

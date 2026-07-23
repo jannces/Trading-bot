@@ -90,6 +90,7 @@ h1, h2 { margin: 0; }
 .ls-row span { font-size: 0.62rem; color: var(--muted); text-transform: uppercase; }
 .ls-row b { font-size: 1rem; font-variant-numeric: tabular-nums; }
 .ls-row small { font-size: 0.6rem; }
+.ls-gross { margin-top: 6px; font-size: 0.68rem; color: var(--muted); }
 .pnl-pos { color: var(--up); }
 .pnl-neg { color: var(--down); }
 .ls-setups { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 5px; }

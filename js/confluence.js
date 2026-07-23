@@ -21,6 +21,7 @@ import { runAll } from "./strategies/index.js";
 import { buildContext, detectSetups } from "./setups.js";
 import { htfBias, biasForDirection } from "./htf.js";
 import { pivotHighs, pivotLows } from "./indicators.js";
+import { computeR } from "./costs.js";
 
 const SETUP_PRIORITY = ["sweep_reverse", "divergence_reversal", "breakout_retest", "trend_pullback"];
 const SETUP_DISPLAY = {
@@ -177,10 +178,11 @@ function tierFor(aligned, htfStrongAligned) {
 // ---------------------------------------------------------------------------
 // Outcome tracking for a FROZEN signal. Levels never change; only status does.
 //   states: waiting | running | tp1 | tp2 | stopped | expired
-//   returns { state, done, realizedR, note, barsSinceTrigger }
+//   returns { state, done, path, grossR, netR, realizedR, note, barsSinceTrigger }
+//   realizedR == netR (after fees + slippage); grossR is the ideal-fill value.
 // Sim rule (same as backtest): half off at TP1, stop -> breakeven, runner to
 // TP2; conservative intrabar (stop/BE before target). Expires if unfilled
-// within scalper.expireBars[tf].
+// within scalper.expireBars[tf]. Costs from CONFIG.costs (js/costs.js).
 // ---------------------------------------------------------------------------
 export function trackOutcome(plan, candles) {
   const long = plan.direction === "LONG";
@@ -189,6 +191,9 @@ export function trackOutcome(plan, candles) {
   let barsSince = 0;
   let tp1 = false;
   let stop = plan.stop;
+  let state = null;
+  let done = false;
+  let note = "";
 
   for (const c of candles) {
     if (c.time <= plan.triggerTime) continue;
@@ -197,7 +202,7 @@ export function trackOutcome(plan, candles) {
       const touched = long ? c.low <= plan.entryHigh : c.high >= plan.entryLow;
       if (touched) filled = true;
       else {
-        if (barsSince > expireBars) return term("expired", 0, "no fill within expiry window", barsSince);
+        if (barsSince > expireBars) { state = "expired"; done = true; note = "no fill within expiry window"; break; }
         continue;
       }
     }
@@ -205,21 +210,31 @@ export function trackOutcome(plan, candles) {
     const hitTp1 = long ? c.high >= plan.tp1 : c.low <= plan.tp1;
     const hitTp2 = long ? c.high >= plan.tp2 : c.low <= plan.tp2;
     if (!tp1) {
-      if (hitStop) return term("stopped", -1, "stopped before TP1", barsSince);
+      if (hitStop) { state = "stopped"; done = true; note = "stopped before TP1"; break; }
       if (hitTp1) { tp1 = true; stop = plan.entryPrice; }
     } else {
-      if (long ? c.low <= stop : c.high >= stop) return term("tp1", 0.75, "TP1 hit, runner stopped at breakeven", barsSince);
-      if (hitTp2) return term("tp2", 2.25, "TP1 + TP2 hit", barsSince);
+      if (long ? c.low <= stop : c.high >= stop) { state = "tp1"; done = true; note = "TP1 hit, runner stopped at breakeven"; break; }
+      if (hitTp2) { state = "tp2"; done = true; note = "TP1 + TP2 hit"; break; }
     }
   }
-  // Non-terminal.
-  if (tp1) return { state: "tp1", done: false, realizedR: 0.75, note: "TP1 hit, runner active", barsSinceTrigger: barsSince };
-  if (filled) return { state: "running", done: false, realizedR: 0, note: "in trade", barsSinceTrigger: barsSince };
-  return { state: "waiting", done: false, realizedR: 0, note: "awaiting entry", barsSinceTrigger: barsSince };
-
-  function term(state, realizedR, note, bars) {
-    return { state, done: true, realizedR, note, barsSinceTrigger: bars };
+  if (!state) {
+    if (tp1) { state = "tp1"; note = "TP1 hit, runner active"; }
+    else if (filled) { state = "running"; note = "in trade"; }
+    else { state = "waiting"; note = "awaiting entry"; }
   }
+
+  const path = pathFor(state, done);
+  const { grossR, netR } = computeR(plan, path);
+  return { state, done, path, grossR, netR, realizedR: netR, note, barsSinceTrigger: barsSince };
+}
+
+/** Map an outcome state to a cost-model path. */
+function pathFor(state, done) {
+  if (state === "stopped") return "stopped";
+  if (state === "tp2") return "tp1_tp2";
+  if (state === "tp1") return done ? "tp1_be" : "tp1_open";
+  if (state === "running") return "running";
+  return "expired"; // waiting / expired -> never filled -> 0R
 }
 
 // ---------------------------------------------------------------------------
