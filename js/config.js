@@ -136,7 +136,13 @@ export const CONFIG = {
   // HTF used by the standalone backtest per timeframe (scanner uses config.htf).
   htfMap: { "1m": "15m", "5m": "15m", "15m": "1h", "1h": "4h", "4h": "1d", "1d": "1w" },
 
-  backtest: { maxBarsToFill: 10, warmup: 120 },
+  backtest: {
+    maxBarsToFill: 10,
+    warmup: 120,
+    // `--compare` needs at least this many trades on a TF before it will issue a
+    // keep/disable verdict for a setup; below it the verdict is "insufficient data".
+    minTradesForVerdict: 50,
+  },
 
   notifications: { minTierForAlert: "A" }, // browser alert on A/A+
 };

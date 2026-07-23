@@ -211,6 +211,7 @@ count, HTF), **named contributors** with individual scores, a plain-language
 | `regime.btcSymbol` / `regime.btcTimeframe` | which symbol/timeframe defines the market regime |
 | `exposure.maxSameDirection` | ACTIVE same-direction signals allowed before new ones are flagged `exposureCapped` |
 | `disabledSetups` | array of setup ids / `id@tf` combos the gate skips (Phase 2) |
+| `backtest.minTradesForVerdict` | min trades on a TF before `--compare` issues a keep/disable verdict (default 50) (Task 4) |
 | `timing.incrementalKlineLimit` / `timing.candleCloseGraceMs` | incremental fetch size / post-close scan grace (Phase 3) |
 
 ---
@@ -247,6 +248,12 @@ Validation flags:
   and whether edge **holds out-of-sample**.
 - `--matrix` — runs all scanner timeframes and prints a **setup × timeframe ×
   tier** net-expectancy table.
+- `--compare 1m 5m CANDLES` — runs the same period on both TFs and prints a
+  side-by-side net-R / profit-factor / trade-count / max-DD table (overall and
+  per setup), ending with a per-setup verdict ("keep both" / "keep 5m only" /
+  "disable both"). A setup needs ≥ `backtest.minTradesForVerdict` (default 50)
+  trades on a TF or its side is **"insufficient data"** — never a recommendation
+  on a thin sample.
 - `--walk` — **walk-forward**: grid-searches {`gate.minAgree`,
   `scalper.stopCapPct`, `scalper.expireBars`, `gate.triggerRecencyBars`} on
   rolling train windows, applies the winner to the next (out-of-sample) window,

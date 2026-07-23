@@ -21,6 +21,7 @@ import { CONFIG } from "./js/config.js";
 import { evaluate } from "./js/confluence.js";
 import { computeR } from "./js/costs.js";
 import { htfSliceAtTime, intervalMinutes } from "./js/htf.js";
+import { compareVerdict } from "./js/verdict.js";
 import * as mexc from "./js/mexc.js";
 import { MockProvider } from "./js/mockprovider.js";
 
@@ -32,6 +33,7 @@ async function main() {
   const scan = args.includes("--scan");
   const matrix = args.includes("--matrix");
   const walk = args.includes("--walk");
+  const compare = args.includes("--compare");
   const splitIdx = args.indexOf("--split");
   const doSplit = splitIdx !== -1;
   const pos = args.filter((a) => !a.startsWith("--"));
@@ -41,7 +43,8 @@ async function main() {
   const splitFrac = doSplit ? (parseFloat(floats[0]) || 0.7) : 0.7;
   const limit = clamp(parseInt(nums[0], 10) || 800, 200, 1500);
   let symbolArg, tf;
-  if (scan) { tf = words[0] || "5m"; }
+  if (compare) { symbolArg = "BTCUSDT"; tf = words[1] || "5m"; } // words are the two TFs
+  else if (scan) { tf = words[0] || "5m"; }
   else if (demo) { symbolArg = "BTCUSDT"; tf = words[0] || "5m"; }
   else { symbolArg = (words[0] || "BTCUSDT").toUpperCase(); tf = words[1] || "5m"; }
 
@@ -68,16 +71,22 @@ async function main() {
   // Fetch REAL higher-timeframe series (bias + regime) once per (symbol, htfIv),
   // consumed via htfSliceAtTime — identical to the live scanner (parity).
   const htfCache = new Map();
-  const fetchHtf = async (sym, htfIv) => {
+  const fetchHtf = async (sym, htfIv, baseTf = matrix ? "5m" : tf) => {
     const key = `${sym}:${htfIv}`;
     if (htfCache.has(key)) return htfCache.get(key);
-    const baseTf = matrix ? "5m" : tf;
     const hl = clamp(Math.ceil((limit * intervalMinutes(baseTf)) / intervalMinutes(htfIv)) + 80, 100, 1000);
     let h = [];
     try { h = await provider.getKlines(sym, htfIv, hl); } catch { h = []; }
     htfCache.set(key, h);
     return h;
   };
+
+  // --- Compare mode: 1m vs 5m over the same period, with per-setup verdicts ---
+  if (compare) {
+    const cmpTfs = words.length >= 2 ? words.slice(0, 2) : ["1m", "5m"];
+    await runCompare(symbols, cmpTfs, provider, fetchHtf, htfTf, regimeTf, limit, demo, scan);
+    return finish();
+  }
 
   const all = [];
   for (const sym of symbols) {
@@ -236,6 +245,53 @@ function reportNegative(all) {
   for (const [id, ts] of negSetups) console.log(`   - ${id}: net ${fmtR(mean(ts.map((t) => t.netR)))} (gross ${fmtR(mean(ts.map((t) => t.grossR)))}) over ${ts.length}`);
   const suggest = negCombos.map(([k]) => k);
   if (suggest.length) console.log(`\n   Suggested config.disabledSetups: ${JSON.stringify(suggest)}`);
+}
+
+// --- Compare two timeframes over the same period, with per-setup verdicts ---
+async function runCompare(symbols, cmpTfs, provider, fetchHtf, htfTf, regimeTf, limit, demo, scan) {
+  const [tfA, tfB] = cmpTfs;
+  const minV = CONFIG.backtest.minTradesForVerdict;
+  const baseTf = cmpTfs.slice().sort((a, b) => intervalMinutes(b) - intervalMinutes(a))[0]; // longest -> size HTF for it
+  const trades = { [tfA]: [], [tfB]: [] };
+
+  console.log(`COMPARE ${tfA} vs ${tfB} — ${scan ? `top-${symbols.length}` : symbols[0]} · ${limit} candles · min ${minV} trades for a verdict\n`);
+  for (const sym of symbols) {
+    const htf = await fetchHtf(sym, htfTf, baseTf);
+    const regime = await fetchHtf(sym, regimeTf, baseTf);
+    for (const tf of cmpTfs) {
+      let candles;
+      try { candles = await provider.getKlines(sym, tf, limit); }
+      catch (e) { if (!scan) throw e; continue; }
+      if (!candles || candles.length < CONFIG.backtest.warmup + 30) continue;
+      for (const tr of replay(candles, sym, tf, htf, regime)) trades[tf].push(tr);
+      if (!demo) await sleep(CONFIG.timing.klineStaggerMs);
+    }
+  }
+
+  // Overall side-by-side.
+  const sA = stats(trades[tfA]); const sB = stats(trades[tfB]);
+  console.log("OVERALL");
+  console.log("  " + pad("metric", 12) + pad(tfA, 12) + tfB);
+  console.log("  " + "-".repeat(34));
+  const row = (label, fa, fb) => console.log("  " + pad(label, 12) + pad(fa, 12) + fb);
+  row("n", sA.n, sB.n);
+  row("win%", fmtPct(sA.winRate), fmtPct(sB.winRate));
+  row("netR", fmtR(sA.netAvg), fmtR(sB.netAvg));
+  row("PF", fmtPF(sA.pf), fmtPF(sB.pf));
+  row("maxDD(R)", fmtR(-sA.maxDD), fmtR(-sB.maxDD));
+
+  // Per setup + verdict.
+  console.log("\nPER SETUP (net R / PF / n)  ->  verdict");
+  console.log("  " + pad("setup", 20) + pad(`${tfA}`, 20) + pad(`${tfB}`, 20) + "verdict");
+  console.log("  " + "-".repeat(78));
+  const setups = [...new Set([...trades[tfA], ...trades[tfB]].map((t) => t.setupName))];
+  for (const name of setups) {
+    const a = stats(trades[tfA].filter((t) => t.setupName === name));
+    const b = stats(trades[tfB].filter((t) => t.setupName === name));
+    const cell = (s) => `${fmtR(s.netAvg)}/${fmtPF(s.pf)}/${s.n}`;
+    console.log("  " + pad(name, 20) + pad(cell(a), 20) + pad(cell(b), 20) + compareVerdict(a, b, tfA, tfB, minV));
+  }
+  console.log("\nVerdicts use net expectancy; a TF needs >= min trades or its side is 'insufficient'. Not financial advice.");
 }
 
 // --- Walk-forward ----------------------------------------------------------
