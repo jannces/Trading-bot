@@ -62,6 +62,10 @@ function renderStatus(s) {
   if (!s) return;
   el("stPairs").textContent = `${s.pairs} pairs`;
   el("stCycle").textContent = `${s.cycleMs} ms/cycle`;
+  if (s.btcBias) {
+    el("stBtc").textContent = `BTC ${s.btcBias}`;
+    el("stBtc").className = "ws " + (s.btcBias === "BULL" ? "ok" : s.btcBias === "BEAR" ? "err" : "");
+  }
   el("stWs").textContent = s.ws;
   el("stWs").className = "ws" + (String(s.ws).toLowerCase().includes("error") ? " err" : " ok");
   el("stUpdate").textContent = s.lastUpdate ? "updated " + new Date(s.lastUpdate).toLocaleTimeString() : "—";
@@ -84,6 +88,7 @@ function card(item) {
   const chips = (item.contributors || []).map((c) => `<span class="chip">${esc(c.name)} · ${c.score}</span>`).join("");
   const badge = statusBadge(item);
   const age = item.age != null ? `${item.age} bars` : item.kind === "forming" ? "forming" : "—";
+  const cap = item.exposureCapped ? '<span class="badge b-exp" title="Beyond the same-direction exposure cap">EXP-CAP</span>' : "";
   const missing = item.forming && item.missing ? `<div class="card-missing">Waiting: ${esc(item.missing.join(", "))}</div>` : "";
   d.innerHTML = `
     <div class="card-top">
@@ -104,7 +109,7 @@ function card(item) {
     ${missing}
     <div class="card-foot">
       <span class="tier tier-${(item.tier || "B").replace("+", "plus")}">${item.tier || "B"}</span>
-      ${badge}
+      ${badge}${cap}
       <span class="age">${age}</span>
       <span class="live" data-sym="${esc(item.symbol)}">${item.price != null ? fmtP(item.price) : ""}</span>
     </div>`;
@@ -144,7 +149,8 @@ function renderLedger() {
         <div><span>Net R (PnL)</span><b class="${pnlCls(o.totalR)}">${o.n ? fmtR(o.totalR) : "—"}</b></div>
       </div>
       <div class="ls-gross">${o.n ? `Gross ${fmtR(o.grossTotalR)}R → Net ${fmtR(o.totalR)}R after fees + slippage` : "Gross → Net after fees + slippage"}</div>
-      <div class="ls-setups">${Object.entries(s.bySetup || {}).map(([k, v]) => `<span class="ls-chip">${esc(k)}: <b class="${pnlCls(v.totalR)}">${fmtR(v.totalR)}R</b> net <small class="muted">(gross ${fmtR(v.grossTotalR)})</small> ×${v.n}</span>`).join("")}</div>`;
+      <div class="ls-setups">${Object.entries(s.bySetup || {}).map(([k, v]) => `<span class="ls-chip">${esc(k)}: <b class="${pnlCls(v.totalR)}">${fmtR(v.totalR)}R</b> net <small class="muted">(gross ${fmtR(v.grossTotalR)})</small> ×${v.n}</span>`).join("")}</div>
+      ${Object.keys(s.byBtcRegime || {}).length ? `<div class="ls-setups">${Object.entries(s.byBtcRegime).map(([k, v]) => `<span class="ls-chip">BTC ${esc(k)}: <b class="${pnlCls(v.totalR)}">${fmtR(v.totalR)}R</b> ×${v.n}</span>`).join("")}</div>` : ""}`;
   }
   const rows = [...stateUI.ledger].reverse().slice(0, 60);
   el("ledger").innerHTML = rows.map((r) => {

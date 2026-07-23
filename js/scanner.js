@@ -14,7 +14,7 @@
 import { CONFIG } from "./config.js";
 import { evaluate, trackOutcome } from "./confluence.js";
 import { rankTopPairs } from "./mexc.js";
-import { intervalMinutes } from "./htf.js";
+import { intervalMinutes, htfBias } from "./htf.js";
 
 export class Scanner {
   constructor(provider) {
@@ -60,6 +60,11 @@ export class Scanner {
       syms.flatMap((sym) => tfs.map((tf) => () => this.ensureKlines(sym, tf))),
       CONFIG.timing.maxConcurrentFetches
     );
+
+    // BTC regime: the market-wide bias alt signals are checked against.
+    await this.ensureKlines(CONFIG.regime.btcSymbol, CONFIG.regime.btcTimeframe);
+    const btc = this.klines.get(`${CONFIG.regime.btcSymbol}:${CONFIG.regime.btcTimeframe}`);
+    this.btcBias = btc ? htfBias(btc).bias : "NEUTRAL";
 
     // Evaluate + manage signals.
     const feed = [];
@@ -128,6 +133,15 @@ export class Scanner {
     const plan = decision.plan;
     const key = `${sym}:${tf}`;
 
+    // BTC regime filter: alts fighting the BTC bias are suppressed or downgraded.
+    if (CONFIG.regime.btcFilter !== "off" && sym !== CONFIG.regime.btcSymbol && this.btcBias && this.btcBias !== "NEUTRAL") {
+      const counter = (plan.direction === "LONG" && this.btcBias === "BEAR") || (plan.direction === "SHORT" && this.btcBias === "BULL");
+      if (counter) {
+        if (CONFIG.regime.btcFilter === "suppress") return null;
+        if (CONFIG.regime.btcFilter === "downgrade") plan.tier = downgradeTier(plan.tier);
+      }
+    }
+
     if (decision.status === "ACTIVE") {
       // Lock a new signal unless one is already active for this pair/tf.
       if (!this.signals.has(key)) this.lockSignal(key, plan);
@@ -140,11 +154,19 @@ export class Scanner {
 
   lockSignal(key, plan) {
     const id = `${plan.symbol}-${plan.interval}-${plan.direction}-${plan.triggerTime}`;
+    // Concurrent-exposure guard: count ACTIVE signals already in this direction.
+    const sameDir = [...this.signals.values()].filter((s) => s.direction === plan.direction).length;
+    const exposureCapped = sameDir >= CONFIG.exposure.maxSameDirection;
+    const btcBias = this.btcBias || "NEUTRAL";
+    const hourUTC = new Date(plan.triggerTime).getUTCHours();
     const sig = {
       ...plan,
       signalId: id,
       status: "LOCKED",
       realizedR: 0,
+      exposureCapped,
+      btcBias,
+      hourUTC,
       lockedAt: Date.now(),
     };
     this.signals.set(key, sig);
@@ -155,6 +177,7 @@ export class Scanner {
       contributors: plan.contributors.length,
       entryLow: plan.entryLow, entryHigh: plan.entryHigh, entryPrice: plan.entryPrice,
       stop: plan.stop, tp1: plan.tp1, tp2: plan.tp2,
+      exposureCapped, btcBias, hourUTC,
       createdAt: plan.triggerTime, status: "open", realizedR: null, grossR: null, closedAt: null,
     });
     this.onNewSignal(sig);
@@ -195,11 +218,16 @@ export class Scanner {
         grossAvgR: n ? grossTotalR / n : 0, grossTotalR,
       };
     };
-    const perSetup = {};
-    for (const r of closed) (perSetup[r.setupName || r.setup] ||= []).push(r);
+    const group = (rows, keyFn) => {
+      const g = {};
+      for (const r of rows) (g[keyFn(r)] ||= []).push(r);
+      return Object.fromEntries(Object.entries(g).map(([k, v]) => [k, summary(v)]));
+    };
     return {
       overall: summary(closed),
-      bySetup: Object.fromEntries(Object.entries(perSetup).map(([k, v]) => [k, summary(v)])),
+      bySetup: group(closed, (r) => r.setupName || r.setup),
+      byBtcRegime: group(closed, (r) => r.btcBias || "NEUTRAL"), // BTC bias at signal time
+      byHour: group(closed, (r) => String(r.hourUTC ?? new Date(r.createdAt).getUTCHours())), // hour-of-day (UTC)
       total: this.ledger.length,
       open: this.ledger.filter((r) => r.status === "open").length,
     };
@@ -213,6 +241,7 @@ export class Scanner {
       ws: wsStatus,
       active: this.signals.size,
       forming: this.feed.filter((f) => f.kind === "forming").length,
+      btcBias: this.btcBias || "NEUTRAL",
     };
   }
 
@@ -244,6 +273,7 @@ export function mergeIncremental(cache, fresh, intervalMs, cap) {
 }
 
 function rankKind(k) { return k === "active" ? 0 : 1; }
+function downgradeTier(t) { return t === "A+" ? "A" : "B"; }
 function statusLabel(state) {
   return { waiting: "LOCKED", running: "RUNNING", tp1: "TP1 HIT", tp2: "TP2 HIT", stopped: "STOPPED", expired: "EXPIRED" }[state] || "LOCKED";
 }

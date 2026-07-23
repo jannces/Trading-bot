@@ -96,6 +96,16 @@ a sub-second/tick system.
      confirmations (shows what's missing),
    - **NONE** → not shown.
 4. Feed is ranked: active first, then forming, each by score.
+5. **Portfolio / regime awareness (Phase 4):**
+   - **BTC regime filter** — BTC bias is computed each cycle from `BTCUSDT`
+     `regime.btcTimeframe` (15m) via the existing HTF logic. `regime.btcFilter`:
+     `"suppress"` drops alt signals counter to BTC bias, `"downgrade"` lowers
+     their tier, `"off"` disables. BTC itself is exempt; shown in the status line.
+   - **Concurrent-exposure guard** — beyond `exposure.maxSameDirection` ACTIVE
+     signals in one direction, new signals still lock but are flagged
+     **`exposureCapped`** (an "EXP-CAP" badge in the feed and a field in the ledger).
+   - Each ledger record stores the **BTC bias** and **hour-of-day (UTC)** at lock;
+     the summary adds `byBtcRegime` and `byHour` breakdowns.
 
 ---
 
@@ -170,6 +180,16 @@ count, HTF), **named contributors** with individual scores, a plain-language
 | `slippage.stopPct` | adverse slippage on stop / breakeven market fills |
 | `slippage.entryTicks` | accepted but **not applied** (no per-symbol tick size); use the pct fields |
 | `spreadPct` | half-spread crossed on taker (stop/BE) fills |
+
+**Regime / exposure config keys (Phase 4):**
+
+| Key | Meaning |
+|---|---|
+| `regime.btcFilter` | `"off"` \| `"suppress"` \| `"downgrade"` — how to treat alts counter to BTC bias |
+| `regime.btcSymbol` / `regime.btcTimeframe` | which symbol/timeframe defines the market regime |
+| `exposure.maxSameDirection` | ACTIVE same-direction signals allowed before new ones are flagged `exposureCapped` |
+| `disabledSetups` | array of setup ids / `id@tf` combos the gate skips (Phase 2) |
+| `timing.incrementalKlineLimit` / `timing.candleCloseGraceMs` | incremental fetch size / post-close scan grace (Phase 3) |
 
 ---
 
@@ -247,8 +267,9 @@ Explicitly listed so a reviewer has hooks:
    as gross vs net R. Still simplified: no funding, no partial fills, a single
    fixed fill assumption, no per-symbol tick size / real spread (uses a flat
    `spreadPct` estimate), conservative intrabar ordering only.
-5. **One signal per pair/timeframe at a time**; no position sizing, no portfolio
-   view, no correlation handling across pairs.
+5. **Partial portfolio awareness (Phase 4):** BTC regime filter + a
+   same-direction exposure cap exist, but there is still **no position sizing**,
+   no cross-pair correlation handling, and no aggregate risk budget.
 6. **HTF divergence fixed (Phase 2):** the backtest now consumes real 15m klines
    sliced by time (`htf.htfSliceAtTime`), matching the live scanner. (The mock
    provider still derives its own 15m by resampling its 1m base — self-consistent.)

@@ -101,6 +101,16 @@ export const CONFIG = {
   // negative-expectancy report suggests entries for this list.
   disabledSetups: [],
 
+  // -- Portfolio / regime awareness -----------------------------------------
+  regime: {
+    btcFilter: "suppress", // "off" | "suppress" (drop counter-BTC alts) | "downgrade" (lower tier)
+    btcSymbol: "BTCUSDT",
+    btcTimeframe: "15m", // BTC bias computed from this timeframe (existing HTF logic)
+  },
+  exposure: {
+    maxSameDirection: 5, // beyond this many ACTIVE same-direction signals, new ones are flagged
+  },
+
   risk: { atrPeriod: 14 },
 
   indicators: {
