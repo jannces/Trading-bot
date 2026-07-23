@@ -53,7 +53,9 @@ export class Scanner {
   async scan() {
     const t0 = Date.now();
     const syms = this.symbols();
-    const tfs = [...CONFIG.scanner.scanTimeframes, CONFIG.scanner.htfTimeframe];
+    // Only the configured scan timeframes (+ the HTF bias TF) are fetched, so
+    // dropping "1m" from config.scanner.timeframes stops fetching 1m klines.
+    const tfs = [...new Set([...CONFIG.scanner.timeframes, CONFIG.scanner.htfTimeframe])];
 
     // Fetch klines for every pair/timeframe with a concurrency cap.
     await runLimited(
@@ -69,7 +71,7 @@ export class Scanner {
     // Evaluate + manage signals.
     const feed = [];
     for (const sym of syms) {
-      for (const tf of CONFIG.scanner.scanTimeframes) {
+      for (const tf of CONFIG.scanner.timeframes) {
         const item = this.evaluatePair(sym, tf);
         if (item) feed.push(item);
       }

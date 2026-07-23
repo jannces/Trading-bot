@@ -47,7 +47,7 @@ async function main() {
 
   const provider = demo ? new MockProvider({ full: true }) : { getKlines: mexc.getKlines, get24hr: mexc.get24hr };
   const htfTf = CONFIG.scanner.htfTimeframe;
-  const timeframes = matrix ? CONFIG.scanner.scanTimeframes : [tf];
+  const timeframes = matrix ? CONFIG.scanner.timeframes : [tf];
 
   // Resolve the symbol universe.
   let symbols;

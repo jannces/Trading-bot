@@ -23,6 +23,7 @@ import { Scanner } from "./js/scanner.js";
 import * as mexc from "./js/mexc.js";
 import { MockProvider } from "./js/mockprovider.js";
 import { createLedgerStore } from "./js/ledgerstore.js";
+import { intervalMinutes } from "./js/htf.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MOCK = process.env.MOCK === "1" || process.argv.includes("--mock");
@@ -72,11 +73,16 @@ async function runScan() {
   try { await scanner.scan(); broadcast({ type: "scan", ...scanner.snapshot(wsStatus) }); }
   catch (e) { console.error("Scan error:", e.message); }
 }
-// Candle-close-driven scanning (live): scan just after each 1m close + grace, so
-// evaluation is fresh and we don't waste cycles mid-candle. A slow fallback timer
-// guarantees progress if the aligned timer drifts or in MOCK (compressed time).
+// Candle-close-driven scanning (live): scan just after the FASTEST scanned
+// timeframe's close + grace, so evaluation is fresh and we don't waste cycles
+// mid-candle. Keys off config.scanner.timeframes — no hardcoded 1m. A slow
+// fallback timer guarantees progress if the aligned timer drifts (or in MOCK).
+function fastestScanMs() {
+  const mins = CONFIG.scanner.timeframes.map(intervalMinutes);
+  return Math.max(1, Math.min(...mins)) * 60 * 1000;
+}
 function scheduleAlignedScan() {
-  const int = 60 * 1000; // fastest scan timeframe (1m) close boundary
+  const int = fastestScanMs();
   const delay = int - (Date.now() % int) + CONFIG.timing.candleCloseGraceMs;
   setTimeout(async () => { await runScan(); scheduleAlignedScan(); }, delay);
 }
@@ -177,7 +183,7 @@ async function main() {
   setInterval(refreshTopSafe, CONFIG.scanner.listRefreshMs);
   server.listen(CONFIG.server.port, () => {
     console.log(`\nScalper scanner on http://localhost:${CONFIG.server.port}  ${MOCK ? "(MOCK data)" : "(live MEXC)"}`);
-    console.log(`Scanning top ${scanner.symbols().length} pairs on ${CONFIG.scanner.scanTimeframes.join("/")} · HTF ${CONFIG.scanner.htfTimeframe}`);
+    console.log(`Scanning top ${scanner.symbols().length} pairs on ${CONFIG.scanner.timeframes.join("/")} · HTF ${CONFIG.scanner.htfTimeframe}`);
   });
   startScanning();
   priceLoop();

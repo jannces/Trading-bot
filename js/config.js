@@ -17,9 +17,13 @@ export const CONFIG = {
   scanner: {
     topN: 50, // scan the top-N USDT pairs by 24h quote volume
     listRefreshMs: 60 * 60 * 1000, // refresh the top-N list hourly
-    scanTimeframes: ["1m", "5m"], // scalper timeframes
-    htfTimeframe: "15m", // higher-timeframe bias filter
-    require5mAgreeFor1m: true, // 1m signals also need 5m direction agreement
+    // Timeframes actually scanned/evaluated. 5m is the primary scalping TF.
+    // Add "1m" here to re-enable 1m scanning (nothing 1m-specific was removed):
+    //   timeframes: ["1m", "5m"]
+    // When "1m" is not listed, its klines are never fetched (less API load).
+    timeframes: ["5m"],
+    htfTimeframe: "15m", // higher-timeframe bias filter (see config.htf)
+    require5mAgreeFor1m: true, // when 1m IS scanned, its signals need 5m agreement
     klineLimit: 200, // candles held per pair/timeframe
     // Exclude leveraged tokens (…3L/3S/5L/5S…) and stable-vs-stable pairs.
     excludeLeveraged: /(\d+[LS])USDT$/i,

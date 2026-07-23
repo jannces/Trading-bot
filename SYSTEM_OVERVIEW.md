@@ -91,10 +91,15 @@ a sub-second/tick system.
 
 1. **Universe:** top-50 USDT pairs by 24h quote volume, excluding leveraged
    tokens (`…3L/3S`) and stable-vs-stable pairs.
-2. **Timeframes:** scans **1m and 5m**; **15m is the higher-timeframe (HTF) bias
-   filter**. A **1m signal also requires 5m directional agreement**.
-3. Each scan cycle: for every pair × {1m, 5m} it calls the gate `evaluate()` with
-   that pair's candles + the 15m candles. Results become feed items:
+2. **Timeframes (config-driven):** `config.scanner.timeframes` (default
+   **`["5m"]`** — 5m is the primary scalping TF). Add `"1m"` to re-enable 1m
+   scanning; nothing 1m-specific was removed. When a TF isn't listed its klines
+   are never fetched. **15m is the higher-timeframe (HTF) bias filter.** When 1m
+   IS scanned, a 1m signal also requires 5m directional agreement. The
+   candle-close scheduler, kline warm-up, expiry bars and stop caps all key off
+   this list (the live scan aligns to the **fastest** configured TF's close).
+3. Each scan cycle: for every pair × configured TF it calls the gate `evaluate()`
+   with that pair's candles + the 15m candles. Results become feed items:
    - **ACTIVE** → a locked signal (see §6),
    - **FORMING** → a setup fired and nothing hard-rejects it, but it needs more
      confirmations (shows what's missing),
